@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   ConnectionNotFoundError,
+  CredentialIntegrityError,
   InvalidConfigError,
   OAuthClientNotConfiguredError,
 } from "../../../src/core/errors.js";
 import { createGoogle } from "../../../src/core/create-google.js";
 import type { GoogleEvent } from "../../../src/core/events.js";
-import { sha256 } from "../../../src/core/oauth/pkce.js";
+import { buildAad, decryptValue } from "../../../src/core/crypto/envelope.js";
+import { codeChallenge, sha256 } from "../../../src/core/oauth/pkce.js";
 import { FakeGoogleOAuth } from "../../../src/testing/fake-google-oauth.js";
 import { InMemoryStore } from "../../../src/testing/in-memory-store.js";
 import { LocalKeyProvider } from "../../../src/testing/local-key-provider.js";
@@ -21,6 +23,7 @@ const cfg = {
 };
 
 let store: InMemoryStore;
+let kp: LocalKeyProvider;
 let events: GoogleEvent[];
 let clock: Date;
 let g: ReturnType<typeof createGoogle>;
@@ -48,11 +51,12 @@ const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
 beforeEach(async () => {
   store = new InMemoryStore();
+  kp = new LocalKeyProvider();
   events = [];
   clock = new Date("2026-01-01T00:00:00Z");
   g = createGoogle({
     store,
-    keyProvider: new LocalKeyProvider(),
+    keyProvider: kp,
     callbackUrl: CALLBACK,
     onEvent: (e) => {
       events.push(e);
@@ -153,6 +157,33 @@ describe("oauth.createAuthUrl", () => {
     });
     const dump = JSON.stringify(rec);
     expect(dump).not.toContain(state);
+
+    const aad = (recordId: string) =>
+      buildAad({
+        tenantId: "t1",
+        record: "oauth_state",
+        recordId,
+        field: "code_verifier",
+      });
+    const verifier = await decryptValue(
+      rec!.codeVerifier,
+      aad(hex(sha256(state))),
+      kp,
+    );
+    expect(verifier).toMatch(/^[\w-]{43}$/);
+    expect(dump).not.toContain(verifier);
+    expect(codeChallenge(verifier)).toBe(
+      new URL(url).searchParams.get("code_challenge"),
+    );
+    for (const wrong of [
+      "deadbeef",
+      hex(sha256(state)).toUpperCase(),
+      Buffer.from(sha256(state)).toString("base64url"),
+    ]) {
+      await expect(
+        decryptValue(rec!.codeVerifier, aad(wrong), kp),
+      ).rejects.toBeInstanceOf(CredentialIntegrityError);
+    }
     expect(events).toEqual([]);
   });
 
