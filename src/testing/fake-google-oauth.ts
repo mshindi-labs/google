@@ -1,4 +1,4 @@
-import { InvalidGrantError } from "../core/oauth/gateway.js";
+import { AUTH_ENDPOINT, InvalidGrantError } from "../core/oauth/gateway.js";
 import type { OAuthGateway } from "../core/oauth/gateway.js";
 import { codeChallenge } from "../core/oauth/pkce.js";
 
@@ -44,7 +44,18 @@ export class FakeGoogleOAuth implements OAuthGateway {
   }
 
   consent(authUrl: string, account: Account): { code: string; state: string } {
-    const q = new URL(authUrl).searchParams;
+    const parsed = new URL(authUrl);
+    if (parsed.origin + parsed.pathname !== AUTH_ENDPOINT)
+      throw new Error(`Auth URL must target the endpoint ${AUTH_ENDPOINT}`);
+    const q = parsed.searchParams;
+    for (const [k, v] of [
+      ["response_type", "code"],
+      ["code_challenge_method", "S256"],
+      ["access_type", "offline"],
+    ] as const) {
+      if (q.get(k) !== v)
+        throw new Error(`Auth URL must include ${k}=${v} (got ${q.get(k)})`);
+    }
     const requested = (q.get("scope") ?? "").split(" ").filter(Boolean);
     const scopes =
       account.grantScopes ??

@@ -101,15 +101,20 @@ describe("google gateway", () => {
   });
 
   it("exchangeCode wraps gaxios errors without leaking the secret", async () => {
-    const err = Object.assign(new Error("boom"), {
-      response: { status: 400, data: { error: "invalid_request" } },
-      config: { data: "client_secret=SUPERSECRET" },
-    });
+    const err = Object.assign(
+      new Error(
+        "boom client_secret=GOCSPX-SUPERSECRET refresh_token=1//SUPERSECRET",
+      ),
+      {
+        response: { status: 400, data: { error: "invalid_request" } },
+        config: { data: "client_secret=GOCSPX-SUPERSECRET" },
+      },
+    );
     m.getToken.mockRejectedValue(err);
     const e = await gw
       .exchangeCode({
         clientId: "c",
-        clientSecret: "SUPERSECRET",
+        clientSecret: "GOCSPX-SUPERSECRET",
         code: "c",
         codeVerifier: "v",
         redirectUri: "u",
@@ -118,9 +123,17 @@ describe("google gateway", () => {
     expect(e).toBeInstanceOf(GoogleApiError);
     expect((e as GoogleApiError).status).toBe(400);
     expect((e as GoogleApiError).reason).toBe("invalid_request");
-    expect(JSON.stringify(e, Object.getOwnPropertyNames(e))).not.toContain(
-      "SUPERSECRET",
-    );
+    const cause = (e as Error).cause as Error;
+    expect(cause).toBeInstanceOf(Error);
+    for (const k of ["config", "request", "response"])
+      expect(cause).not.toHaveProperty(k);
+    for (const text of [
+      (e as Error).message,
+      String(cause.message),
+      String(cause.stack),
+    ]) {
+      expect(text).not.toContain("SUPERSECRET");
+    }
   });
 
   it("refreshAccessToken uses setCredentials + getAccessToken", async () => {

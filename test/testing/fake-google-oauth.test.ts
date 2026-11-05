@@ -11,6 +11,8 @@ const url = (o: Record<string, string> = {}) => {
     redirect_uri: "https://x/cb",
     code_challenge: codeChallenge(VERIFIER),
     code_challenge_method: "S256",
+    response_type: "code",
+    access_type: "offline",
     scope: "openid email https://www.googleapis.com/auth/gmail.send",
     state: "st8",
     ...o,
@@ -29,6 +31,30 @@ const ex = (code: string, o: Record<string, string> = {}) => ({
 });
 
 describe("FakeGoogleOAuth", () => {
+  it.each(["response_type", "code_challenge_method", "access_type"])(
+    "consent throws when %s is missing",
+    (k) => {
+      const u = new URL(url());
+      u.searchParams.delete(k);
+      expect(() => new FakeGoogleOAuth().consent(u.toString(), acct)).toThrow(
+        k,
+      );
+    },
+  );
+
+  it.each<Record<string, string>>([
+    { response_type: "token" },
+    { code_challenge_method: "plain" },
+    { access_type: "online" },
+  ])("consent throws on wrong value %o", (o) => {
+    expect(() => new FakeGoogleOAuth().consent(url(o), acct)).toThrow();
+  });
+
+  it("consent throws on a non-Google endpoint", () => {
+    const u = url().replace("accounts.google.com", "evil.example.com");
+    expect(() => new FakeGoogleOAuth().consent(u, acct)).toThrow(/endpoint/);
+  });
+
   it("consent returns state and a fresh code", () => {
     const f = new FakeGoogleOAuth();
     const a = f.consent(url(), acct);
