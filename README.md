@@ -68,6 +68,7 @@ own error classes and `instanceof` can be false for a genuine library error.
 - [Tenant setup](docs/guides/tenant-setup.md): for a tenant admin creating the Google OAuth client.
 - [Host integration](docs/guides/host-integration.md): wiring, routes, error messages, key providers.
 - [Bulk sending](docs/guides/bulk-sending.md): a queue pattern that never double-sends.
+- [Prisma and TypeORM](docs/guides/orm-integration.md): plugging an ORM into the Postgres store.
 - [Postgres row-level security](docs/guides/postgres-rls.md): optional database-enforced tenant isolation.
 - [Design spec](docs/SPEC.md): invariants, flows, threat model.
 

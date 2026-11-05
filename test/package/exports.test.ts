@@ -85,6 +85,8 @@ describe("package exports", () => {
     expect(names(await load("postgres"))).toMatchInlineSnapshot(`
       [
         "createPostgresStore",
+        "fromPrisma",
+        "fromTypeOrm",
         "getMigrations",
       ]
     `);

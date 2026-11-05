@@ -1,5 +1,13 @@
 import { PGlite } from "@electric-sql/pglite";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { InvalidConfigError } from "../../src/core/errors.js";
 import { getMigrations } from "../../src/postgres/migrations.js";
 import { createPostgresStore, type Query } from "../../src/postgres/index.js";
@@ -10,11 +18,39 @@ afterEach(async () => {
   while (open.length) await open.pop()!.close();
 });
 
+type Dump = Awaited<ReturnType<PGlite["dumpDataDir"]>>;
+
+// Booting PGlite is slow; migrate once per options and load a copy per test.
+const templates = new Map<string, Promise<Dump>>();
+async function migratedTemplate(opts?: {
+  schema?: string;
+  tablePrefix?: string;
+}): Promise<Dump> {
+  const key = JSON.stringify(opts ?? {});
+  if (!templates.has(key)) {
+    templates.set(
+      key,
+      (async () => {
+        const pg = await PGlite.create();
+        if (opts?.schema) await pg.exec(`create schema "${opts.schema}"`);
+        for (const m of getMigrations(opts)) await pg.exec(m.sql);
+        const dump = await pg.dumpDataDir("none");
+        await pg.close();
+        return dump;
+      })(),
+    );
+  }
+  return templates.get(key)!;
+}
+
+const CUSTOM = { schema: "mail", tablePrefix: "gx_" };
+beforeAll(async () => {
+  await Promise.all([migratedTemplate(), migratedTemplate(CUSTOM)]);
+}, 120_000);
+
 async function freshDb(opts?: { schema?: string; tablePrefix?: string }) {
-  const pg = new PGlite();
+  const pg = await PGlite.create({ loadDataDir: await migratedTemplate(opts) });
   open.push(pg);
-  if (opts?.schema) await pg.exec(`create schema "${opts.schema}"`);
-  for (const m of getMigrations(opts)) await pg.exec(m.sql);
   const query: Query = (sql, params) =>
     pg.query(sql, params) as Promise<{ rows: never[] }>;
   return { pg, query };
@@ -52,7 +88,7 @@ const client = (tenantId: string) => ({
 
 describe("PostgresStore extras", () => {
   it("runs with a custom schema and prefix", async () => {
-    const o = { schema: "mail", tablePrefix: "gx_" };
+    const o = CUSTOM;
     const { query } = await freshDb(o);
     const store = createPostgresStore({ query, ...o });
     await store.upsertOAuthClient(client("t1"), { revokeConnections: false });
