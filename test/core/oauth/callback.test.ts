@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ConnectionRevokedError,
   InvalidOAuthStateError,
   MissingScopeError,
   NoRefreshTokenError,
@@ -7,7 +8,7 @@ import {
   OAuthConsentDeniedError,
   UnexpectedAccountError,
 } from "../../../src/core/errors.js";
-import { createGoogle } from "../../../src/core/create-google.js";
+import { createGoogle, internals } from "../../../src/core/create-google.js";
 import type { GoogleEvent } from "../../../src/core/events.js";
 import { buildAad, decryptValue } from "../../../src/core/crypto/envelope.js";
 import { sha256 } from "../../../src/core/oauth/pkce.js";
@@ -385,6 +386,31 @@ describe("oauth.handleCallback", () => {
     vi.spyOn(store, "upsertConnection").mockRejectedValueOnce(boom);
     await expect(connect(careers)).rejects.toBe(boom);
     expect(fake.revoked).toHaveLength(1);
+  });
+
+  it("client changed mid-flight → token revoked, row revoked/client_changed, ConnectionRevokedError", async () => {
+    const orig = store.upsertConnection.bind(store);
+    vi.spyOn(store, "upsertConnection").mockImplementationOnce(async (rec) => {
+      // clients.configure lands after the code exchange with the old client.
+      await g.clients.configure({
+        ...cfg,
+        tenantId: "t1",
+        clientId: "999-new.apps.googleusercontent.com",
+      });
+      events.length = 0;
+      await orig(rec);
+    });
+    const err = await connect(careers).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConnectionRevokedError);
+    expect(err).toMatchObject({ reason: "client_changed", tenantId: "t1" });
+    expect(fake.revoked).toHaveLength(1);
+    const [row] = await store.listConnections("t1");
+    expect(row?.status).toBe("revoked");
+    expect(row?.statusReason).toBe("client_changed");
+    expect(events.map((e) => e.type)).not.toContain("connection.created");
+    await expect(
+      g[internals].tokens.getAccessToken("t1", row!.id),
+    ).rejects.toBeInstanceOf(ConnectionRevokedError);
   });
 
   it("key provider encrypt failure → original error rethrown, token revoked", async () => {

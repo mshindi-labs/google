@@ -96,14 +96,19 @@ export function createConnectionsApi(deps: {
         }
       }
       const at = deps.now();
-      await deps.store.upsertConnection({
-        ...rec,
-        refreshToken: null,
-        status: "revoked",
-        statusReason: "disconnected",
-        updatedAt: at,
-      });
+      // Targeted update: never writes back a stale full record (R34).
+      const found = await deps.store.disconnectConnection(
+        tenantId,
+        connectionId,
+        at,
+      );
       deps.tokens.evict(connectionId);
+      if (!found) {
+        throw new ConnectionNotFoundError(undefined, {
+          tenantId,
+          connectionId,
+        });
+      }
       await deps.emit({
         type: "connection.disconnected",
         tenantId,
@@ -115,14 +120,20 @@ export function createConnectionsApi(deps: {
     },
 
     async setDisplayName({ tenantId, connectionId, displayName }) {
-      const rec = await load(tenantId, connectionId);
-      const updated: ConnectionRecord = {
-        ...rec,
-        displayName: sanitizeDisplayName(displayName),
-        updatedAt: deps.now(),
-      };
-      await deps.store.upsertConnection(updated);
-      return toView(updated);
+      // Targeted update: status and refresh token are never touched (R34).
+      const found = await deps.store.setConnectionDisplayName(
+        tenantId,
+        connectionId,
+        sanitizeDisplayName(displayName),
+        deps.now(),
+      );
+      if (!found) {
+        throw new ConnectionNotFoundError(undefined, {
+          tenantId,
+          connectionId,
+        });
+      }
+      return toView(await load(tenantId, connectionId));
     },
   };
 }

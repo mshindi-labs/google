@@ -237,6 +237,96 @@ describe("connections api", () => {
   });
 });
 
+/** Makes the next store.getConnection call wait (after reading) until released. */
+const holdNextRead = () => {
+  const orig = store.getConnection.bind(store);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let reached!: () => void;
+  const held = new Promise<void>((r) => (reached = r));
+  let armed = true;
+  store.getConnection = async (...a) => {
+    const r = await orig(...a);
+    if (armed) {
+      armed = false;
+      reached();
+      await gate;
+    }
+    return r;
+  };
+  return { held, release };
+};
+
+describe("connections api: interleavings", () => {
+  it("setDisplayName racing clients.configure keeps revoked/client_changed", async () => {
+    const { connection } = await connect();
+    const { held, release } = holdNextRead();
+    const pending = g.connections.setDisplayName({
+      tenantId: "t1",
+      connectionId: connection.id,
+      displayName: "HR",
+    });
+    await held;
+    await g.clients.configure({
+      ...cfg,
+      tenantId: "t1",
+      clientId: "999-new.apps.googleusercontent.com",
+    });
+    release();
+    const view = await pending;
+    const after = await store.getConnection("t1", connection.id);
+    expect(after?.status).toBe("revoked");
+    expect(after?.statusReason).toBe("client_changed");
+    expect(after?.displayName).toBe("HR");
+    // The view is read after the targeted update, so it carries the new name.
+    expect(view.displayName).toBe("HR");
+  });
+
+  it("disconnect racing setDisplayName keeps both changes", async () => {
+    const { connection } = await connect();
+    const { held, release } = holdNextRead();
+    const pending = g.connections.disconnect({
+      tenantId: "t1",
+      connectionId: connection.id,
+      actorId: "a",
+    });
+    await held;
+    await g.connections.setDisplayName({
+      tenantId: "t1",
+      connectionId: connection.id,
+      displayName: "HR",
+    });
+    release();
+    await pending;
+    const after = await store.getConnection("t1", connection.id);
+    expect(after?.status).toBe("revoked");
+    expect(after?.statusReason).toBe("disconnected");
+    expect(after?.refreshToken).toBeNull();
+    expect(after?.displayName).toBe("HR");
+  });
+
+  it("disconnect racing a re-connect ends disconnected with no token", async () => {
+    const { connection } = await connect();
+    const { held, release } = holdNextRead();
+    const pending = g.connections.disconnect({
+      tenantId: "t1",
+      connectionId: connection.id,
+      actorId: "a",
+    });
+    await held;
+    clock = new Date("2026-01-03T00:00:00Z");
+    const again = await connect();
+    expect(again.connection.id).toBe(connection.id);
+    release();
+    await pending;
+    const after = await store.getConnection("t1", connection.id);
+    expect(after?.status).toBe("revoked");
+    expect(after?.statusReason).toBe("disconnected");
+    expect(after?.refreshToken).toBeNull();
+    expect(after?.updatedAt).toEqual(clock);
+  });
+});
+
 describe("sanitizeDisplayName", () => {
   it("caps at 100 code points without splitting surrogate pairs", () => {
     const out = sanitizeDisplayName("x".repeat(99) + "😀" + "tail");

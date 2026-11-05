@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { buildAad, decryptValue, encryptValue } from "../crypto/envelope.js";
 import type { KeyProvider } from "../crypto/key-provider.js";
 import {
+  ConnectionRevokedError,
   InvalidOAuthStateError,
   NoRefreshTokenError,
   OAuthClientNotConfiguredError,
@@ -191,6 +192,22 @@ export async function handleCallback(
       lastUsedAt: existing?.lastUsedAt ?? null,
     };
     await deps.store.upsertConnection(rec);
+
+    // 10b. A clients.configure that changed the client after our exchange may have
+    // revoked the row before the upsert above re-activated it: re-check (R34).
+    const latest = await deps.store.getOAuthClient(tenantId);
+    if (!latest || latest.clientId !== client.clientId) {
+      await deps.store.updateConnectionStatus(
+        tenantId,
+        connectionId,
+        "revoked",
+        "client_changed",
+      );
+      throw new ConnectionRevokedError("client_changed", {
+        tenantId,
+        connectionId,
+      });
+    }
   } catch (err) {
     return reject(err as Error);
   }

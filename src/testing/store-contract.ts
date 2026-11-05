@@ -470,6 +470,92 @@ export function runStoreContractTests(
       expect(got!.lastUsedAt!.getTime()).toBe(at.getTime());
     });
 
+    it("setConnectionDisplayName updates displayName and updatedAt only", async () => {
+      await seedClients();
+      const original = conn(C(1), "t1", "sub1");
+      await store.upsertConnection(original);
+      const at = new Date("2026-03-03T03:00:00.000Z");
+      expect(await store.setConnectionDisplayName("t1", C(1), "HR", at)).toBe(
+        true,
+      );
+      const got = await store.getConnection("t1", C(1));
+      expect(got).toEqual({ ...original, displayName: "HR", updatedAt: at });
+      expect(got!.updatedAt).toBeInstanceOf(Date);
+      expect(await store.setConnectionDisplayName("t1", C(1), null, at)).toBe(
+        true,
+      );
+      expect((await store.getConnection("t1", C(1)))!.displayName).toBeNull();
+    });
+
+    it("setConnectionDisplayName never changes status or refresh token on a revoked row", async () => {
+      await seedClients();
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      await store.upsertOAuthClient(client("t1", "rotated"), {
+        revokeConnections: true,
+      });
+      const before = await store.getConnection("t1", C(1));
+      expect(before!.status).toBe("revoked");
+      const at = new Date("2026-03-03T03:00:00.000Z");
+      expect(await store.setConnectionDisplayName("t1", C(1), "HR", at)).toBe(
+        true,
+      );
+      const got = await store.getConnection("t1", C(1));
+      expect(got!.status).toBe("revoked");
+      expect(got!.statusReason).toBe("client_changed");
+      expect(got!.refreshToken).toEqual(before!.refreshToken);
+      expect(got!.displayName).toBe("HR");
+    });
+
+    it("setConnectionDisplayName with the wrong tenant or unknown id → false, unchanged", async () => {
+      await seedClients();
+      const original = conn(C(1), "t1", "sub1");
+      await store.upsertConnection(original);
+      const at = new Date("2026-03-03T03:00:00.000Z");
+      expect(await store.setConnectionDisplayName("t2", C(1), "X", at)).toBe(
+        false,
+      );
+      expect(await store.setConnectionDisplayName("t1", C(9), "X", at)).toBe(
+        false,
+      );
+      expect(
+        await store.setConnectionDisplayName("t1", "not-a-uuid", "X", at),
+      ).toBe(false);
+      expect(await store.getConnection("t1", C(1))).toEqual(original);
+      expect(await store.getConnection("t2", C(1))).toBeNull();
+    });
+
+    it("disconnectConnection nulls the token and marks revoked/disconnected", async () => {
+      await seedClients();
+      const original = conn(C(1), "t1", "sub1", { displayName: "HR" });
+      await store.upsertConnection(original);
+      const at = new Date("2026-03-03T03:00:00.000Z");
+      expect(await store.disconnectConnection("t1", C(1), at)).toBe(true);
+      const got = await store.getConnection("t1", C(1));
+      expect(got).toEqual({
+        ...original,
+        refreshToken: null,
+        status: "revoked",
+        statusReason: "disconnected",
+        updatedAt: at,
+      });
+      const refs: EncryptedValueRef[] = [];
+      for await (const r of store.iterateEncryptedValues(10)) refs.push(r);
+      expect(refs.filter((r) => r.record === "connection")).toHaveLength(0);
+    });
+
+    it("disconnectConnection with the wrong tenant or unknown id → false, unchanged", async () => {
+      await seedClients();
+      const original = conn(C(1), "t1", "sub1");
+      await store.upsertConnection(original);
+      const at = new Date("2026-03-03T03:00:00.000Z");
+      expect(await store.disconnectConnection("t2", C(1), at)).toBe(false);
+      expect(await store.disconnectConnection("t1", C(9), at)).toBe(false);
+      expect(await store.disconnectConnection("t1", "not-a-uuid", at)).toBe(
+        false,
+      );
+      expect(await store.getConnection("t1", C(1))).toEqual(original);
+    });
+
     it("updateConnectionStatus sets status and reason (tenant-scoped)", async () => {
       await seedClients();
       await store.upsertConnection(conn(C(1), "t1", "sub1"));

@@ -239,6 +239,29 @@ export function createPostgresStore(
       );
     },
 
+    async setConnectionDisplayName(tenantId, connectionId, displayName, at) {
+      if (!isUuid(connectionId)) return false;
+      const { rows } = await q<Row>(
+        `update ${CONNS} set display_name = $3, updated_at = $4::timestamptz
+         where tenant_id = $1 and id = $2::uuid
+         returning 1`,
+        [tenantId, connectionId, displayName, at.toISOString()],
+      );
+      return rows.length > 0;
+    },
+
+    async disconnectConnection(tenantId, connectionId, at) {
+      if (!isUuid(connectionId)) return false;
+      const { rows } = await q<Row>(
+        `update ${CONNS} set refresh_token = null, status = 'revoked',
+           status_reason = 'disconnected', updated_at = $3::timestamptz
+         where tenant_id = $1 and id = $2::uuid
+         returning 1`,
+        [tenantId, connectionId, at.toISOString()],
+      );
+      return rows.length > 0;
+    },
+
     async insertOAuthState(rec) {
       if (rec.connectionId != null && !isUuid(rec.connectionId)) {
         throw new InvalidConfigError("connectionId must be a UUID");

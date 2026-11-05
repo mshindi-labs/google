@@ -237,6 +237,12 @@ Implement `CredentialStore` and pass `runStoreContractTests` from
   value still equals `ref.value` (and the tenant matches), and return `true` when it did,
   `false` otherwise. `rewrapAll` relies on this so a concurrent write is never overwritten
   with a stale re-wrap.
+- `setConnectionDisplayName` and `disconnectConnection` must be single targeted updates.
+  `setConnectionDisplayName` changes only `displayName` and `updatedAt` (never `status`
+  or the refresh token), so a concurrent `client_changed` revoke is never undone.
+  `disconnectConnection` sets the refresh token to null, `status = 'revoked'`,
+  `statusReason = 'disconnected'` and `updatedAt`. Both return `false` when the row is
+  not in that tenant.
 
 ## 11. Testing your integration
 

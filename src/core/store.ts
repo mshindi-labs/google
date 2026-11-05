@@ -43,6 +43,26 @@ export interface CredentialStore {
     connectionId: string,
     at: Date,
   ): Promise<void>;
+  /**
+   * Targeted update of `displayName` and `updatedAt` only (never status or
+   * refresh token). Returns false when the connection does not exist in the tenant.
+   */
+  setConnectionDisplayName(
+    tenantId: string,
+    connectionId: string,
+    displayName: string | null,
+    at: Date,
+  ): Promise<boolean>;
+  /**
+   * Targeted update: refreshToken = null, status 'revoked', statusReason
+   * 'disconnected', updatedAt = at. Returns false when the connection does not
+   * exist in the tenant.
+   */
+  disconnectConnection(
+    tenantId: string,
+    connectionId: string,
+    at: Date,
+  ): Promise<boolean>;
 
   // OAuth state
   insertOAuthState(rec: OAuthStateRecord): Promise<void>;

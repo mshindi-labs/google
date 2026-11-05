@@ -106,6 +106,33 @@ export class InMemoryStore implements CredentialStore {
     if (c && c.tenantId === tenantId) c.lastUsedAt = new Date(at.getTime());
   }
 
+  async setConnectionDisplayName(
+    tenantId: string,
+    connectionId: string,
+    displayName: string | null,
+    at: Date,
+  ): Promise<boolean> {
+    const c = this.connections.get(connectionId);
+    if (!c || c.tenantId !== tenantId) return false;
+    c.displayName = displayName;
+    c.updatedAt = new Date(at.getTime());
+    return true;
+  }
+
+  async disconnectConnection(
+    tenantId: string,
+    connectionId: string,
+    at: Date,
+  ): Promise<boolean> {
+    const c = this.connections.get(connectionId);
+    if (!c || c.tenantId !== tenantId) return false;
+    c.refreshToken = null;
+    c.status = "revoked";
+    c.statusReason = "disconnected";
+    c.updatedAt = new Date(at.getTime());
+    return true;
+  }
+
   async insertOAuthState(rec: OAuthStateRecord): Promise<void> {
     const copy = clone(rec);
     copy.stateHash = toBytes(copy.stateHash);
