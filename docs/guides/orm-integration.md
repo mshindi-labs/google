@@ -17,10 +17,14 @@ Tested with Prisma 7 (the `prisma-client` generator with `@prisma/adapter-pg`). 
 wrapper uses only `$queryRawUnsafe`, which every current Prisma version has.
 
 ```ts
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client";
 import { createPostgresStore, fromPrisma } from "@mshindi-labs/google/postgres";
 
-const prisma = new PrismaClient(/* { adapter } */);
+// Prisma 7: the client needs a driver adapter.
+const prisma = new PrismaClient({
+  adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
+});
 const store = createPostgresStore({ query: fromPrisma(prisma) });
 ```
 
@@ -126,20 +130,25 @@ supported API.
 
 ### Migration
 
-Create an empty migration and paste the library's SQL into it, so Prisma's history
-records the tables:
+Give each library migration its own Prisma migration, so Prisma's history records the
+tables and later library migrations apply once, in order. For `0001_init`, create an
+empty migration and paste only that migration's SQL into it:
 
 ```sh
-npx prisma migrate dev --create-only --name google_init
+npx prisma migrate dev --create-only --name google_0001_init
 ```
 
 ```ts
-// print the SQL to paste into prisma/migrations/<timestamp>_google_init/migration.sql
+// print the SQL to paste into prisma/migrations/<timestamp>_google_0001_init/migration.sql
 import { getMigrations } from "@mshindi-labs/google/postgres";
-for (const m of getMigrations()) console.log(m.sql);
+const m = getMigrations().find((m) => m.id === "0001_init")!;
+console.log(m.sql);
 ```
 
-Then run `npx prisma migrate dev`. If you would rather not track the tables in Prisma,
+Then run `npx prisma migrate dev`. When a library release adds a migration (for example
+`0002_…`), create a new Prisma migration for it the same way, with only that id's SQL.
+Never paste the whole `getMigrations()` list into a new migration: the earlier statements
+would fail on tables that already exist. If you would rather not track the tables in Prisma,
 run `getMigrations()` yourself (see [host integration](./host-integration.md)) and use
 `npx prisma db pull` to bring the models into `schema.prisma` afterwards.
 
@@ -165,13 +174,17 @@ const store = createPostgresStore({ query: fromTypeOrm(dataSource) });
 ```
 
 Given a `DataSource`, the wrapper creates a `QueryRunner` for each statement and releases
-it afterwards. Given a `QueryRunner`, it uses that runner and never releases it.
+it afterwards. Given a `QueryRunner`, it uses that runner and never releases it. Anything
+with a `release` method counts as a `QueryRunner`, even if it also has
+`createQueryRunner`. Inside `dataSource.transaction(async (manager) => …)`, pass
+`fromTypeOrm(manager.queryRunner!)` so the library's statements join that transaction
+(and read the RLS guide on rollbacks first).
 
 ### Migration
 
 Do not define entities for these tables and do not let `synchronize: true` manage them:
-TypeORM would try to alter or drop columns it does not know about. Create them with a
-migration that runs the library's SQL:
+TypeORM would try to alter or drop columns it does not know about. Create them with one
+TypeORM migration per library migration id, each running only that id's SQL:
 
 ```ts
 import type { MigrationInterface, QueryRunner } from "typeorm";
@@ -181,7 +194,9 @@ export class GoogleInit1767225600000 implements MigrationInterface {
   name = "GoogleInit1767225600000";
 
   async up(queryRunner: QueryRunner): Promise<void> {
-    for (const m of getMigrations()) await queryRunner.query(m.sql);
+    for (const m of getMigrations().filter((m) => m.id === "0001_init")) {
+      await queryRunner.query(m.sql);
+    }
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
@@ -190,6 +205,10 @@ export class GoogleInit1767225600000 implements MigrationInterface {
   }
 }
 ```
+
+When a library release adds a migration (for example `0002_…`), add a new TypeORM
+migration that filters on that id. Do not edit `GoogleInit…` to run more of the list:
+TypeORM records it as already run.
 
 If you pass `schema` or `tablePrefix` to `createPostgresStore`, pass the same options to
 `getMigrations()` and adjust the table names in `down`.
@@ -209,16 +228,59 @@ try {
   const store = createPostgresStore({ query: fromTypeOrm(runner) });
   // ... use the store / google instance built on it ...
 } finally {
-  await runner.query("select set_config('app.tenant_id', '', false)");
-  await runner.release();
+  try {
+    await runner.query("select set_config('app.tenant_id', '', false)");
+  } finally {
+    await runner.release(); // runs even if the reset fails
+  }
 }
 ```
 
-With Prisma, a session setting on a pooled connection is not reachable; use
-`set_config(..., true)` inside `prisma.$transaction(async (tx) => ...)` with
-`fromPrisma(tx)`. Prisma rolls the transaction back when the callback throws, which would
-restore a consumed OAuth state, so catch library errors inside the callback and rethrow
-them after it returns (see the RLS guide for why).
+### Row-level security with Prisma
+
+Prisma does not let you pin a pooled connection outside a transaction, so a session
+setting is not reachable. The only way to set `app.tenant_id` for the library's
+statements is `set_config(..., true)` inside an interactive transaction,
+`prisma.$transaction(async (tx) => …)` with `fromPrisma(tx)`. That has two hazards:
+
+- **Timeouts.** An interactive transaction is rolled back when it runs longer than
+  `timeout` (default 5000 ms) or waits longer than `maxWait` (default 2000 ms) for a
+  connection. The OAuth callback makes Google HTTP calls (token exchange, ID token
+  checks) inside the flow, so the default timeout can expire mid-flow. The rollback
+  un-consumes the OAuth state, which can then be replayed.
+- **Rollback on throw.** Prisma also rolls back when the callback throws, and several
+  library flows legitimately throw after a successful write (see the
+  [RLS guide](./postgres-rls.md)). That also restores a consumed OAuth state.
+
+For RLS, prefer a plain `pg` client (see the RLS guide) or a pinned TypeORM `QueryRunner`
+as above, both of which use a session setting with no transaction. If you use Prisma
+anyway, size the timeouts for the whole flow, and return the error instead of throwing
+so the transaction commits:
+
+```ts
+const result = await prisma.$transaction(
+  async (tx) => {
+    await tx.$queryRawUnsafe(
+      "select set_config('app.tenant_id', $1, true)",
+      tenantId,
+    );
+    const google = createGoogle({
+      store: createPostgresStore({ query: fromPrisma(tx) }),
+      ...opts,
+    });
+    try {
+      return { ok: await google.oauth.handleCallback({ code, state, error }) };
+    } catch (err) {
+      return { err }; // commit, so the consumed state stays consumed
+    }
+  },
+  { timeout: 30_000, maxWait: 5_000 }, // longer than the slowest Google round trip
+);
+if ("err" in result) throw result.err;
+```
+
+Even then, a timeout still rolls back and allows a replay of that state. Treat this setup
+as weaker than session pinning.
 
 ### Why the wrapper asks for a structured result
 
@@ -233,11 +295,14 @@ The library's tests run the store contract through a naive wrapper to show this.
 
 ## Errors and logging
 
-ORM errors propagate unchanged. Statement parameters can contain ciphertext and
+ORM errors propagate as the same object. Statement parameters can contain ciphertext and
 OAuth state hashes; they are not plaintext secrets, but keep them out of logs anyway:
 
-- TypeORM's `QueryFailedError` carries the statement and its `parameters`. Log
-  `err.message` and `err.code`, not the whole error object. Keep TypeORM's `logging`
-  option off for `query` (it prints parameters).
+- TypeORM's `QueryFailedError` carries the statement and its `parameters`.
+  `fromTypeOrm` clears `parameters` on the error before rethrowing it, so `instanceof`,
+  `code`, `constraint` and `message` still work. It cannot stop TypeORM's own logger:
+  TypeORM logs a failed query before it throws, and with `logging: true`, `["error"]` or
+  `["query"]` the log line includes `-- PARAMETERS: [...]`. Keep `logging` off for the
+  connection the library uses, or give it a custom `logger` that drops parameters.
 - Prisma's raw-query errors (`P2010`) do not include parameters. Keep Prisma's `query`
   log level off in production for the same reason.
