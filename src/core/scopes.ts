@@ -4,6 +4,10 @@ export const BASE_SCOPES: readonly string[] = ["openid", "email"];
 
 export const SERVICE_SCOPES = {
   gmail: ["https://www.googleapis.com/auth/gmail.send"],
+  calendar: [
+    "https://www.googleapis.com/auth/calendar.events.owned",
+    "https://www.googleapis.com/auth/calendar.events.freebusy",
+  ],
 } as const;
 
 export type GoogleService = keyof typeof SERVICE_SCOPES;

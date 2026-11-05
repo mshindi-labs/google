@@ -8,6 +8,12 @@ import {
   GoogleLibError,
   InvalidConfigError,
   InvalidMessageError,
+  ConferencingUnavailableError,
+  EventCancelledError,
+  EventConflictError,
+  EventNotFoundError,
+  EventNotManagedError,
+  InvalidEventError,
   InvalidOAuthStateError,
   MessageTooLargeError,
   MissingPeerDependencyError,
@@ -99,5 +105,29 @@ describe("errors", () => {
     const out = safeCause("1//0gSecret-token");
     expect(out).toBeInstanceOf(Error);
     expect(out.message).not.toContain("1//0gSecret-token");
+  });
+
+  it("calendar errors carry their codes", () => {
+    const cases: [GoogleLibError, string][] = [
+      [new InvalidEventError("title"), "invalid_event"],
+      [new EventNotFoundError(), "event_not_found"],
+      [new EventNotManagedError(), "event_not_managed"],
+      [new EventCancelledError(), "event_cancelled"],
+      [new EventConflictError(), "event_conflict"],
+      [new ConferencingUnavailableError(), "conferencing_unavailable"],
+    ];
+    for (const [e, code] of cases) {
+      expect(e).toBeInstanceOf(GoogleLibError);
+      expect(e.code).toBe(code);
+    }
+    expect(new InvalidEventError("title").field).toBe("title");
+  });
+
+  it("InvalidEventError message is single-line and caps the field", () => {
+    const e = new InvalidEventError("a\r\nb".repeat(40));
+    expect(e.message).not.toMatch(/[\r\n]/);
+    expect(e.message.length).toBeLessThanOrEqual(
+      "Invalid event field: ".length + 64,
+    );
   });
 });
