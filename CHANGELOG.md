@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/mshindi-labs/google/compare/google-v1.0.0...google-v1.0.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **build:** add repository metadata for npm provenance ([4bfdbc1](https://github.com/mshindi-labs/google/commit/4bfdbc174820f2e8e2a460b0d0db337517997336))
+* **build:** add repository metadata for npm provenance ([395ed7a](https://github.com/mshindi-labs/google/commit/395ed7a4e16d0ffdf7147077d68d006dd63784cb))
+
 ## 1.0.0 (2026-11-05)
 
 
