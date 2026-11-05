@@ -1,3 +1,4 @@
+import { simpleParser } from "mailparser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ConnectionNotFoundError,
@@ -109,6 +110,45 @@ describe("createGmail().send", () => {
     expect(raws[0]).toContain("Careers Team");
     expect(raws[1]).toContain("HR Desk");
     expect(raws[1]).not.toContain("Careers Team");
+  });
+
+  it("uses the sanitized fromName: control chars stripped, capped at 100 code points", async () => {
+    await gmailWith().send({
+      ...base(),
+      fromName: "Evil\u0007\u0000Name" + "z".repeat(300),
+    });
+    const parsed = await simpleParser(capture.messages[0]!.raw);
+    const name = parsed.from!.value[0]!.name;
+    expect(name).toBe(("EvilName" + "z".repeat(300)).slice(0, 100));
+    expect(Array.from(name)).toHaveLength(100);
+    expect(name).not.toMatch(/[\u0000-\u001f]/);
+  });
+
+  it("a whitespace-only fromName falls back to displayName", async () => {
+    await g.connections.setDisplayName({
+      tenantId: "t1",
+      connectionId: connId,
+      displayName: "Careers Team",
+    });
+    await gmailWith().send({ ...base(), fromName: "   " });
+    const parsed = await simpleParser(capture.messages[0]!.raw);
+    expect(parsed.from!.value[0]!.name).toBe("Careers Team");
+  });
+
+  it("client_changed while an access token is cached → ConnectionRevokedError, nothing sent (Review Focus 5)", async () => {
+    const gm = gmailWith();
+    await gm.send(base()); // served from the token primed at callback
+    expect(capture.messages).toHaveLength(1);
+    await store.updateConnectionStatus(
+      "t1",
+      connId,
+      "revoked",
+      "client_changed",
+    );
+    const err = await gm.send(base()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConnectionRevokedError);
+    expect(err).toMatchObject({ reason: "client_changed" });
+    expect(capture.messages).toHaveLength(1);
   });
 
   it("reuses the given threadId", async () => {

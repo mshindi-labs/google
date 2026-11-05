@@ -55,7 +55,7 @@ export function createGmail(
           connectionId,
         });
         const raw = await buildMime(msg, {
-          name: input.fromName ?? connection.displayName,
+          name: msg.fromName ?? connection.displayName,
           address: connection.email,
         });
         const attempt = (accessToken: string) =>
