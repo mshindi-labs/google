@@ -28,6 +28,8 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    # Must match the environment on the npm trusted publisher exactly.
+    environment: mshindi-labs_google
     permissions:
       contents: read
       id-token: write
@@ -44,7 +46,6 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      # Authenticates with npm trusted publishing (OIDC); no npm token needed.
       - name: Publish
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
