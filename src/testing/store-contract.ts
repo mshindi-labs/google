@@ -371,7 +371,9 @@ export function runStoreContractTests(
       ];
       for (const ref of bad) {
         try {
-          await store.replaceEncryptedValue(ref, ev("hijacked"));
+          expect(await store.replaceEncryptedValue(ref, ev("hijacked"))).toBe(
+            false,
+          );
         } catch {
           // rejecting is acceptable; mutating is not
         }
@@ -419,6 +421,32 @@ export function runStoreContractTests(
       expect(consumed!.codeVerifier.ct).toBe(
         `new-oauth_state-${hex(hashBytes(9))}`,
       );
+    });
+
+    it("replaceEncryptedValue is compare-and-swap", async () => {
+      await seedClients();
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      const refs: EncryptedValueRef[] = [];
+      for await (const r of store.iterateEncryptedValues(10)) refs.push(r);
+      const ref = refs.find((r) => r.record === "connection")!;
+      // concurrent change lands after iteration
+      expect(await store.replaceEncryptedValue(ref, ev("concurrent"))).toBe(
+        true,
+      );
+      // stale ref must not overwrite it
+      expect(await store.replaceEncryptedValue(ref, ev("stale"))).toBe(false);
+      expect((await store.getConnection("t1", C(1)))!.refreshToken!.ct).toBe(
+        "concurrent",
+      );
+      const wrong = { ...ref, tenantId: "t2", value: ev("concurrent") };
+      expect(await store.replaceEncryptedValue(wrong, ev("x"))).toBe(false);
+    });
+
+    it("tolerates malformed connection ids", async () => {
+      await seedClients();
+      expect(await store.getConnection("t1", "not-a-uuid")).toBeNull();
+      await store.updateConnectionStatus("t1", "not-a-uuid", "error", "x");
+      await store.touchConnection("t1", "not-a-uuid", T0);
     });
 
     it("touchConnection is tenant-scoped", async () => {

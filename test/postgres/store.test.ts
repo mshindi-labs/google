@@ -109,4 +109,30 @@ describe("PostgresStore extras", () => {
     expect(r.rows[0]!.actor_id).toBeNull();
     expect(r.rows[0]!.payload).toEqual({ reason: "x", at: T0.toISOString() });
   });
+
+  it("rejects non-UUID connection ids on state and audit inserts", async () => {
+    const { query } = await freshDb();
+    const store = createPostgresStore({ query });
+    await expect(
+      store.insertOAuthState({
+        stateHash: new Uint8Array(32).fill(1),
+        tenantId: "t1",
+        actorId: "a",
+        intendedEmail: null,
+        connectionId: "nope",
+        scopes: [],
+        codeVerifier: ev("x"),
+        expiresAt: T0,
+      }),
+    ).rejects.toThrow(InvalidConfigError);
+    await expect(
+      store.insertAuditEvent!({
+        type: "connection.revoked",
+        tenantId: "t1",
+        connectionId: "nope",
+        reason: "x",
+        at: T0,
+      }),
+    ).rejects.toThrow(InvalidConfigError);
+  });
 });

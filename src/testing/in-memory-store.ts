@@ -176,19 +176,32 @@ export class InMemoryStore implements CredentialStore {
   async replaceEncryptedValue(
     ref: EncryptedValueRef,
     value: EncryptedValue,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const v = clone(value);
+    const same = (a: EncryptedValue | null | undefined): boolean =>
+      a != null && JSON.stringify(a) === JSON.stringify(ref.value);
     if (ref.record === "oauth_client" && ref.field === "client_secret") {
       const c = this.clients.get(ref.recordId);
-      if (c && c.tenantId === ref.tenantId) c.clientSecret = v;
+      if (c && c.tenantId === ref.tenantId && same(c.clientSecret)) {
+        c.clientSecret = v;
+        return true;
+      }
+      return false;
     } else if (ref.record === "connection" && ref.field === "refresh_token") {
       const c = this.connections.get(ref.recordId);
-      if (c && c.tenantId === ref.tenantId) c.refreshToken = v;
+      if (c && c.tenantId === ref.tenantId && same(c.refreshToken)) {
+        c.refreshToken = v;
+        return true;
+      }
+      return false;
     } else if (ref.record === "oauth_state" && ref.field === "code_verifier") {
       const s = this.states.get(ref.recordId.toLowerCase());
-      if (s && s.tenantId === ref.tenantId) s.codeVerifier = v;
-    } else {
-      throw new Error(`unknown encrypted field ${ref.record}/${ref.field}`);
+      if (s && s.tenantId === ref.tenantId && same(s.codeVerifier)) {
+        s.codeVerifier = v;
+        return true;
+      }
+      return false;
     }
+    throw new Error(`unknown encrypted field ${ref.record}/${ref.field}`);
   }
 }

@@ -55,10 +55,15 @@ export interface CredentialStore {
 
   // Key rotation
   iterateEncryptedValues(batchSize: number): AsyncIterable<EncryptedValueRef>;
+  /**
+   * Compare-and-swap: replaces the stored value only if it still equals `ref.value`
+   * (and the tenant matches). Returns true if replaced, false otherwise (e.g. a
+   * concurrent write changed the field, or the tenant/record does not match).
+   */
   replaceEncryptedValue(
     ref: EncryptedValueRef,
     value: EncryptedValue,
-  ): Promise<void>;
+  ): Promise<boolean>;
 
   // Optional audit persistence
   insertAuditEvent?(event: GoogleEvent): Promise<void>;

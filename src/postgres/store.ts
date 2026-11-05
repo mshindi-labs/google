@@ -8,6 +8,7 @@ import type {
   OAuthClientRecord,
   OAuthStateRecord,
 } from "../core/types.js";
+import { InvalidConfigError } from "../core/errors.js";
 import { resolveNames } from "./migrations.js";
 
 export type Query = <T = Record<string, unknown>>(
@@ -41,6 +42,10 @@ const toBytes = (v: unknown): Uint8Array => {
 };
 const toHex = (b: Uint8Array): string =>
   Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v: unknown): v is string =>
+  typeof v === "string" && UUID.test(v);
+const isHex = (v: string): boolean => /^([0-9a-f]{2})*$/i.test(v);
 const json = (v: unknown): string => JSON.stringify(v);
 
 const mapClient = (r: Row): OAuthClientRecord => ({
@@ -147,6 +152,7 @@ export function createPostgresStore(
     },
 
     async getConnection(tenantId, connectionId) {
+      if (!isUuid(connectionId)) return null;
       const r = await one(
         `select * from ${CONNS} where tenant_id = $1 and id = $2::uuid`,
         [tenantId, connectionId],
@@ -171,6 +177,9 @@ export function createPostgresStore(
     },
 
     async upsertConnection(rec) {
+      if (!isUuid(rec.id)) {
+        throw new InvalidConfigError("connection id must be a UUID");
+      }
       const r = await one(
         `insert into ${CONNS}
            (id, tenant_id, google_sub, email, display_name, scopes, refresh_token,
@@ -213,6 +222,7 @@ export function createPostgresStore(
     },
 
     async updateConnectionStatus(tenantId, connectionId, status, reason) {
+      if (!isUuid(connectionId)) return;
       await q(
         `update ${CONNS} set status = $3, status_reason = $4
          where tenant_id = $1 and id = $2::uuid`,
@@ -221,6 +231,7 @@ export function createPostgresStore(
     },
 
     async touchConnection(tenantId, connectionId, at) {
+      if (!isUuid(connectionId)) return;
       await q(
         `update ${CONNS} set last_used_at = $3::timestamptz
          where tenant_id = $1 and id = $2::uuid`,
@@ -229,6 +240,9 @@ export function createPostgresStore(
     },
 
     async insertOAuthState(rec) {
+      if (rec.connectionId != null && !isUuid(rec.connectionId)) {
+        throw new InvalidConfigError("connectionId must be a UUID");
+      }
       await q(
         `insert into ${STATES}
            (state_hash, tenant_id, actor_id, intended_email, connection_id,
@@ -249,6 +263,7 @@ export function createPostgresStore(
     },
 
     async consumeOAuthState(stateHash, now) {
+      if (!isHex(stateHash)) return null;
       const r = await one(
         `delete from ${STATES}
          where state_hash = decode($1, 'hex') and expires_at > $2::timestamptz
@@ -332,31 +347,36 @@ export function createPostgresStore(
     },
 
     async replaceEncryptedValue(ref, value) {
+      // Compare-and-swap: only replaces if the stored value still equals ref.value.
       const v = json(value);
+      const old = json(ref.value);
+      let sql: string;
+      let params: unknown[];
       if (ref.record === "oauth_client" && ref.field === "client_secret") {
-        await q(
-          `update ${CLIENTS} set client_secret = $3::jsonb
-           where tenant_id = $1 and tenant_id = $2`,
-          [ref.tenantId, ref.recordId, v],
-        );
+        sql = `update ${CLIENTS} set client_secret = $3::jsonb
+           where tenant_id = $1 and tenant_id = $2 and client_secret = $4::jsonb
+           returning 1`;
+        params = [ref.tenantId, ref.recordId, v, old];
       } else if (ref.record === "connection" && ref.field === "refresh_token") {
-        await q(
-          `update ${CONNS} set refresh_token = $3::jsonb
-           where tenant_id = $1 and id = $2::uuid`,
-          [ref.tenantId, ref.recordId, v],
-        );
+        if (!isUuid(ref.recordId)) return false;
+        sql = `update ${CONNS} set refresh_token = $3::jsonb
+           where tenant_id = $1 and id = $2::uuid and refresh_token = $4::jsonb
+           returning 1`;
+        params = [ref.tenantId, ref.recordId, v, old];
       } else if (
         ref.record === "oauth_state" &&
         ref.field === "code_verifier"
       ) {
-        await q(
-          `update ${STATES} set code_verifier = $3::jsonb
-           where tenant_id = $1 and state_hash = decode($2, 'hex')`,
-          [ref.tenantId, ref.recordId.toLowerCase(), v],
-        );
+        if (!isHex(ref.recordId)) return false;
+        sql = `update ${STATES} set code_verifier = $3::jsonb
+           where tenant_id = $1 and state_hash = decode($2, 'hex')
+             and code_verifier = $4::jsonb
+           returning 1`;
+        params = [ref.tenantId, ref.recordId.toLowerCase(), v, old];
       } else {
         throw new Error(`unknown encrypted field ${ref.record}/${ref.field}`);
       }
+      return (await q<Row>(sql, params)).rows.length > 0;
     },
 
     async insertAuditEvent(event: GoogleEvent) {
@@ -367,6 +387,9 @@ export function createPostgresStore(
         connectionId: _connectionId,
         ...payload
       } = event as GoogleEvent & { actorId?: string; connectionId?: string };
+      if ("connectionId" in event && !isUuid(event.connectionId)) {
+        throw new InvalidConfigError("connectionId must be a UUID");
+      }
       await q(
         `insert into ${AUDIT}
            (tenant_id, type, actor_id, connection_id, payload, occurred_at)
