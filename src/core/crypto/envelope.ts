@@ -1,5 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { CredentialIntegrityError, InvalidConfigError } from "../errors.js";
+import {
+  CredentialIntegrityError,
+  InvalidConfigError,
+  KeyProviderUnavailableError,
+} from "../errors.js";
 import type { KeyProvider } from "./key-provider.js";
 
 export type EncryptedValue = {
@@ -109,7 +113,9 @@ export async function decryptValue(
       decipher.update(unb64(value.ct)),
       decipher.final(),
     ]).toString("utf8");
-  } catch {
+  } catch (err) {
+    // Availability is not an integrity verdict: callers may retry.
+    if (err instanceof KeyProviderUnavailableError) throw err;
     // Deliberately detail-free: never reveal which part failed.
     throw new CredentialIntegrityError();
   } finally {
@@ -128,7 +134,8 @@ export async function rewrapValue(
     dek = await kp.unwrap(value.kid, unb64(value.wdek), aad);
     const { kid, wdek } = await kp.wrap(dek, aad);
     return { ...value, kid, wdek: b64(wdek) };
-  } catch {
+  } catch (err) {
+    if (err instanceof KeyProviderUnavailableError) throw err;
     throw new CredentialIntegrityError();
   } finally {
     dek?.fill(0);

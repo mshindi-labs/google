@@ -100,6 +100,15 @@ export class CredentialIntegrityError extends GoogleLibError {
   }
 }
 
+export class KeyProviderUnavailableError extends GoogleLibError {
+  constructor(
+    message = "Key provider is temporarily unavailable",
+    opts?: ErrorOptions,
+  ) {
+    super("key_provider_unavailable", message, opts);
+  }
+}
+
 export class InvalidMessageError extends GoogleLibError {
   readonly field: string;
   constructor(field: string, message?: string, opts?: ErrorOptions) {
