@@ -8,3 +8,8 @@ export * from "./crypto/gcp-kms.js";
 export * from "./crypto/aws-kms.js";
 export * from "./types.js";
 export * from "./store.js";
+export * from "./events.js";
+export * from "./scopes.js";
+export * from "./clients.js";
+export * from "./tokens.js";
+export * from "./create-google.js";

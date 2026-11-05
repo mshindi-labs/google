@@ -1,4 +1,5 @@
 import type { EncryptedValue } from "./crypto/envelope.js";
+import type { GoogleEvent } from "./events.js";
 import type {
   ConnectionRecord,
   ConnectionStatus,
@@ -59,8 +60,6 @@ export interface CredentialStore {
     value: EncryptedValue,
   ): Promise<void>;
 
-  // Optional audit persistence (Task 5 narrows the event type to GoogleEvent)
-  insertAuditEvent?(
-    event: { type: string; tenantId: string } & Record<string, unknown>,
-  ): Promise<void>;
+  // Optional audit persistence
+  insertAuditEvent?(event: GoogleEvent): Promise<void>;
 }
