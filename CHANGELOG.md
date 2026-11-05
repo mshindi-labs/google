@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0](https://github.com/mshindi-labs/google/compare/google-v1.0.2...google-v1.1.0) (2026-11-05)
+
+
+### Features
+
+* **postgres:** add Prisma and TypeORM query wrappers ([d4ce6df](https://github.com/mshindi-labs/google/commit/d4ce6dfa46033de3990fe4d6fbfb3828ed820586))
+* **postgres:** add Prisma and TypeORM query wrappers ([d6cbcad](https://github.com/mshindi-labs/google/commit/d6cbcad471cd081cb789857a2f01a68e0f135dfb))
+
+
+### Bug Fixes
+
+* **postgres:** scrub TypeORM error parameters and harden runner release ([079dd00](https://github.com/mshindi-labs/google/commit/079dd004f30b242bcaef6b3bb6a9d306b6e40edb))
+
+
+### Documentation
+
+* add Prisma and TypeORM integration guide ([a10180c](https://github.com/mshindi-labs/google/commit/a10180c2a6510799ecf0382d37d9657cb818a85f))
+* **postgres:** fix ORM guide migrations, RLS and logging advice ([98ebb90](https://github.com/mshindi-labs/google/commit/98ebb90cc68fba40c338c6bcf63742fe7be80312))
+
 ## [1.0.2](https://github.com/mshindi-labs/google/compare/google-v1.0.1...google-v1.0.2) (2026-11-05)
 
 
