@@ -10,8 +10,10 @@ import { createClientsApi } from "./clients.js";
 import type { ClientsApi } from "./clients.js";
 import type { GoogleService } from "./scopes.js";
 import type { CredentialStore } from "./store.js";
-import { createPlaceholderTokenManager } from "./tokens.js";
+import { createTokenManager } from "./tokens.js";
 import type { TokenManager } from "./tokens.js";
+import { createConnectionsApi } from "./connections.js";
+import type { ConnectionsApi } from "./connections.js";
 import type { ConnectionView, Logger } from "./types.js";
 
 export type CreateGoogleOptions = {
@@ -44,16 +46,6 @@ export type OAuthApi = {
     created: boolean;
   }>;
   purgeExpiredStates(): Promise<number>;
-};
-
-export type ConnectionsApi = {
-  list(tenantId: string): Promise<ConnectionView[]>;
-  get(tenantId: string, connectionId: string): Promise<ConnectionView>;
-  disconnect(p: {
-    tenantId: string;
-    connectionId: string;
-    actorId: string;
-  }): Promise<void>;
 };
 
 export const internals: unique symbol = Symbol("mshindi-google.internals");
@@ -95,10 +87,6 @@ function assertCallbackUrl(raw: string): void {
   }
 }
 
-const notImplemented = (): never => {
-  throw new Error("not implemented");
-};
-
 export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
   assertCallbackUrl(opts.callbackUrl);
   const now = opts.now ?? (() => new Date());
@@ -108,8 +96,14 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
     ...(opts.logger ? { logger: opts.logger } : {}),
     redactRecipients: opts.redactRecipients ?? false,
   });
-  const tokens = createPlaceholderTokenManager();
   const gateway = opts.oauthGateway ?? createGoogleAuthGateway();
+  const tokens = createTokenManager({
+    store: opts.store,
+    keyProvider: opts.keyProvider,
+    gateway,
+    emit,
+    now,
+  });
 
   const clients = createClientsApi({
     store: opts.store,
@@ -148,11 +142,15 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
         ),
       purgeExpiredStates: () => opts.store.deleteExpiredOAuthStates(now()),
     },
-    connections: {
-      list: notImplemented,
-      get: notImplemented,
-      disconnect: notImplemented,
-    },
+    connections: createConnectionsApi({
+      store: opts.store,
+      keyProvider: opts.keyProvider,
+      gateway,
+      tokens,
+      emit,
+      now,
+      ...(opts.logger ? { logger: opts.logger } : {}),
+    }),
     [internals]: {
       store: opts.store,
       keyProvider: opts.keyProvider,

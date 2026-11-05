@@ -35,15 +35,11 @@ describe("createGoogle", () => {
     expect(g[internals].callbackUrl).toBe("https://hrms.io/cb");
   });
 
-  it("placeholder oauth/connections methods throw not implemented", async () => {
+  it("wires a real connections api and token manager", async () => {
     const g = createGoogle(base());
+    await expect(g.connections.list("t1")).resolves.toEqual([]);
     await expect(
-      Promise.resolve().then(() => g.connections.list("t1")),
-    ).rejects.toThrow("not implemented");
-    await expect(
-      Promise.resolve().then(() =>
-        g[internals].tokens.getAccessToken("t", "c"),
-      ),
-    ).rejects.toThrow("not implemented");
+      g[internals].tokens.getAccessToken("t", "c"),
+    ).rejects.toMatchObject({ code: "connection_not_found" });
   });
 });

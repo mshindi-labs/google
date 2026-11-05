@@ -12,6 +12,7 @@ export * from "./events.js";
 export * from "./scopes.js";
 export * from "./clients.js";
 export * from "./tokens.js";
+export * from "./connections.js";
 export * from "./create-google.js";
 export * from "./oauth/gateway.js";
 export * from "./oauth/google-gateway.js";
