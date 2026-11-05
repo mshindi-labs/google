@@ -201,4 +201,46 @@ describe("validateSendInput", () => {
       thread: { threadId: null, inReplyTo: null, references: [] },
     });
   });
+
+  describe("thread id validation", () => {
+    const bads = [
+      ["U+2028", "<a\u2028b@x.io>"],
+      ["U+2029", "<a\u2029b@x.io>"],
+      ["U+0085", "<a\u0085b@x.io>"],
+      ["VT", "<a\u000bb@x.io>"],
+      ["US", "<a\u001fb@x.io>"],
+      ["e-acute", "<a\u00e9@x.io>"],
+      ["space", "<a b@x.io>"],
+      ["empty", ""],
+    ] as const;
+    it.each(bads)("rejects %s in inReplyTo", (_n, v) => {
+      expect(() => run({ thread: { inReplyTo: v } })).toThrow(
+        expect.objectContaining({ field: "thread.inReplyTo" }),
+      );
+    });
+    it.each(bads)("rejects %s in references", (_n, v) => {
+      expect(() => run({ thread: { references: ["<ok@x.io>", v] } })).toThrow(
+        expect.objectContaining({ field: "thread.references[1]" }),
+      );
+    });
+    it("accepts valid ids", () => {
+      const m = run({
+        thread: {
+          threadId: "18c_f-Z9",
+          inReplyTo: "<a@b>",
+          references: ["<a@b>", "<c.d+e@f.io>"],
+        },
+      });
+      expect(m.thread).toEqual({
+        threadId: "18c_f-Z9",
+        inReplyTo: "<a@b>",
+        references: ["<a@b>", "<c.d+e@f.io>"],
+      });
+    });
+    it.each(["a b", "a/b", "", "a\u2028b"])("rejects threadId %j", (v) => {
+      expect(() => run({ thread: { threadId: v } })).toThrow(
+        expect.objectContaining({ field: "thread.threadId" }),
+      );
+    });
+  });
 });

@@ -53,6 +53,8 @@ const ADDRESS_FORBIDDEN = /[\s\u0000-\u001f\u007f-\u009f<>,;"()[\]\\]/;
 const HEADER_NAME = /^X-[A-Za-z0-9-]+$/;
 const CONTENT_TYPE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const MAX_ADDRESS = 254;
+const MSG_ID = /^[\x21-\x7e]+$/;
+const THREAD_ID = /^[A-Za-z0-9_-]+$/;
 
 function fail(field: string): never {
   throw new InvalidMessageError(field);
@@ -61,6 +63,12 @@ function fail(field: string): never {
 /** Rejects CR, LF and NUL; returns the value unchanged. */
 function clean(value: unknown, field: string): string {
   if (typeof value !== "string" || LINE_BREAKS.test(value)) fail(field);
+  return value;
+}
+
+/** Requires a string that fully matches `pattern`; returns it unchanged. */
+function matching(value: unknown, pattern: RegExp, field: string): string {
+  if (typeof value !== "string" || !pattern.test(value)) fail(field);
   return value;
 }
 
@@ -149,11 +157,15 @@ export function validateSendInput(
   const t = input.thread ?? {};
   const thread = {
     threadId:
-      t.threadId === undefined ? null : clean(t.threadId, "thread.threadId"),
+      t.threadId === undefined
+        ? null
+        : matching(t.threadId, THREAD_ID, "thread.threadId"),
     inReplyTo:
-      t.inReplyTo === undefined ? null : clean(t.inReplyTo, "thread.inReplyTo"),
+      t.inReplyTo === undefined
+        ? null
+        : matching(t.inReplyTo, MSG_ID, "thread.inReplyTo"),
     references: (t.references ?? []).map((r, i) =>
-      clean(r, `thread.references[${i}]`),
+      matching(r, MSG_ID, `thread.references[${i}]`),
     ),
   };
 

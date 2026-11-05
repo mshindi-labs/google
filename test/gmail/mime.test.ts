@@ -1,7 +1,19 @@
 import { hostname } from "node:os";
 import { PassThrough, Readable } from "node:stream";
 import { simpleParser } from "mailparser";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const peerFail = vi.hoisted(() => ({ on: false }));
+vi.mock("../../src/core/peer.js", async (orig) => {
+  const actual = await orig<typeof import("../../src/core/peer.js")>();
+  return {
+    ...actual,
+    loadPeer: (...args: Parameters<typeof actual.loadPeer>) =>
+      peerFail.on
+        ? Promise.reject(new Error("peer missing"))
+        : actual.loadPeer(...args),
+  };
+});
 import { MessageTooLargeError } from "../../src/core/errors.js";
 import { buildMime, MAX_ATTACHMENT_BYTES } from "../../src/gmail/mime.js";
 import type { NormalizedMessage } from "../../src/gmail/validate.js";
@@ -275,31 +287,6 @@ describe("buildMime", () => {
     expect(parsed.bcc).toBeUndefined();
   });
 
-  it("does not let U+2028 in thread ids create a header line", async () => {
-    const buf = await buildMime(
-      msg({
-        thread: {
-          threadId: null,
-          inReplyTo: "<a\u2028Bcc: x@evil.io@x.io>",
-          references: [
-            "<b\u2029X-Evil: 1@x.io>",
-            "<c\u0085Bcc: y@evil.io@x.io>",
-          ],
-        },
-      }),
-      FROM,
-    );
-    const head = buf.toString("utf8").split("\r\n\r\n")[0]!;
-    expect(headerLines(head, "In-Reply-To")).toHaveLength(1);
-    expect(headerLines(head, "References")).toHaveLength(1);
-    expect(headerLines(head, "Bcc")).toHaveLength(0);
-    expect(headerLines(head, "X-Evil")).toHaveLength(0);
-    for (const l of head.split("\r\n")) {
-      expect(l).toMatch(/^(?:[ \t]|[A-Za-z][A-Za-z0-9-]*:)/);
-    }
-    expect(head).not.toMatch(UNICODE_BREAKS);
-  });
-
   it("does not let U+2028 in a custom header value create a header line", async () => {
     const raw = await rawOf(
       msg({ headers: { "X-Note": "a\u2028Bcc: x@evil.io" } }),
@@ -308,5 +295,58 @@ describe("buildMime", () => {
     expect(headerLines(head, "Bcc")).toHaveLength(0);
     expect(headerLines(head, "X-Note")).toHaveLength(1);
     expect(head).not.toMatch(UNICODE_BREAKS);
+  });
+
+  describe("stream cleanup on early exit", () => {
+    const idle = () => new Readable({ read() {} });
+    const att = (filename: string, content: Buffer | Readable) => ({
+      filename,
+      content,
+      contentType: null,
+    });
+
+    it("destroys all streams when the Buffer sum overflows", async () => {
+      const s1 = idle();
+      const s2 = idle();
+      await expect(
+        buildMime(
+          msg({
+            attachments: [
+              att("a", Buffer.alloc(MAX_ATTACHMENT_BYTES + 1)),
+              att("s1", s1),
+              att("s2", s2),
+            ],
+          }),
+          FROM,
+        ),
+      ).rejects.toBeInstanceOf(MessageTooLargeError);
+      expect(s1.destroyed).toBe(true);
+      expect(s2.destroyed).toBe(true);
+    });
+
+    it("destroys the unread stream when an earlier stream is oversized", async () => {
+      const big = Readable.from([Buffer.alloc(MAX_ATTACHMENT_BYTES + 1)]);
+      const s2 = idle();
+      await expect(
+        buildMime(msg({ attachments: [att("big", big), att("s2", s2)] }), FROM),
+      ).rejects.toBeInstanceOf(MessageTooLargeError);
+      expect(big.destroyed).toBe(true);
+      expect(s2.destroyed).toBe(true);
+    });
+
+    it("destroys streams when loadPeer rejects", async () => {
+      const s1 = Readable.from([Buffer.from("x")]);
+      const s2 = idle();
+      peerFail.on = true;
+      try {
+        await expect(
+          buildMime(msg({ attachments: [att("s1", s1), att("s2", s2)] }), FROM),
+        ).rejects.toThrow("peer missing");
+      } finally {
+        peerFail.on = false;
+      }
+      expect(s1.destroyed).toBe(true);
+      expect(s2.destroyed).toBe(true);
+    });
   });
 });
