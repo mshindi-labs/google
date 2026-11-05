@@ -116,90 +116,87 @@ export async function handleCallback(
     throw err;
   };
 
-  // 5. Verify the ID token.
-  let id: Awaited<ReturnType<OAuthGateway["verifyIdToken"]>>;
+  // Steps 5-10 run in one guarded region: any failure revokes, then rethrows unchanged.
+  const at = deps.now();
+  let rec: ConnectionRecord;
+  let existing: ConnectionRecord | null;
   try {
-    id = await deps.gateway.verifyIdToken({
+    // 5. Verify the ID token.
+    const id = await deps.gateway.verifyIdToken({
       idToken: tokens.idToken,
       clientId: client.clientId,
     });
-  } catch (err) {
-    return reject(err as Error);
-  }
-  const email = id.email.trim().toLowerCase();
-  if (id.emailVerified !== true) {
-    return reject(new UnexpectedAccountError(undefined, { tenantId }));
-  }
+    if (typeof id.email !== "string" || id.emailVerified !== true) {
+      throw new UnexpectedAccountError(undefined, { tenantId });
+    }
+    const email = id.email.trim().toLowerCase();
 
-  // 6. Hosted domain.
-  if (
-    client.hostedDomain &&
-    (id.hd ?? "").trim().toLowerCase() !== client.hostedDomain.toLowerCase()
-  ) {
-    return reject(new UnexpectedAccountError(undefined, { tenantId }));
-  }
+    // 6. Hosted domain.
+    if (
+      client.hostedDomain &&
+      (id.hd ?? "").trim().toLowerCase() !== client.hostedDomain.toLowerCase()
+    ) {
+      throw new UnexpectedAccountError(undefined, { tenantId });
+    }
 
-  // 7. Intended account.
-  if (state.intendedEmail && email !== state.intendedEmail) {
-    return reject(new UnexpectedAccountError(undefined, { tenantId }));
-  }
-  let existing: ConnectionRecord | null;
-  if (state.connectionId) {
-    existing = await deps.store.getConnection(tenantId, state.connectionId);
-    if (!existing || existing.googleSub !== id.sub) {
-      return reject(
-        new UnexpectedAccountError(undefined, {
+    // 7. Intended account.
+    if (state.intendedEmail && email !== state.intendedEmail) {
+      throw new UnexpectedAccountError(undefined, { tenantId });
+    }
+    if (state.connectionId) {
+      existing = await deps.store.getConnection(tenantId, state.connectionId);
+      if (!existing || existing.googleSub !== id.sub) {
+        throw new UnexpectedAccountError(undefined, {
           tenantId,
           connectionId: state.connectionId,
-        }),
-      );
+        });
+      }
+    } else {
+      existing = await deps.store.findConnectionBySub(tenantId, id.sub);
     }
-  } else {
-    existing = await deps.store.findConnectionBySub(tenantId, id.sub);
-  }
 
-  // 8. Granted service scopes (base scopes and the userinfo.email alias are ignored).
-  try {
+    // 8. Granted service scopes (base scopes and the userinfo.email alias are ignored).
     assertServiceScopes(tokens.scopes, servicesOf(state.scopes), { tenantId });
+
+    // 9. Refresh token.
+    if (!tokens.refreshToken) {
+      throw new NoRefreshTokenError(undefined, { tenantId });
+    }
+
+    // 10. Upsert by (tenantId, googleSub).
+    const connectionId = existing?.id ?? randomUUID();
+    const refreshToken = await encryptValue(
+      tokens.refreshToken,
+      buildAad({
+        tenantId,
+        record: "connection",
+        recordId: connectionId,
+        field: "refresh_token",
+      }),
+      deps.keyProvider,
+    );
+    rec = {
+      id: connectionId,
+      tenantId,
+      googleSub: id.sub,
+      email,
+      displayName: existing?.displayName ?? null,
+      scopes: [...new Set([...(existing?.scopes ?? []), ...tokens.scopes])],
+      refreshToken,
+      status: "active",
+      statusReason: null,
+      connectedBy: existing?.connectedBy ?? actorId,
+      connectedAt: existing?.connectedAt ?? at,
+      updatedAt: at,
+      lastUsedAt: existing?.lastUsedAt ?? null,
+    };
+    await deps.store.upsertConnection(rec);
   } catch (err) {
     return reject(err as Error);
   }
-
-  // 9. Refresh token.
-  if (!tokens.refreshToken) {
-    return reject(new NoRefreshTokenError(undefined, { tenantId }));
-  }
-
-  // 10. Upsert by (tenantId, googleSub).
-  const at = deps.now();
-  const connectionId = existing?.id ?? randomUUID();
-  const refreshToken = await encryptValue(
-    tokens.refreshToken,
-    buildAad({
-      tenantId,
-      record: "connection",
-      recordId: connectionId,
-      field: "refresh_token",
-    }),
-    deps.keyProvider,
-  );
-  const scopes = [...new Set([...(existing?.scopes ?? []), ...tokens.scopes])];
-  const rec: ConnectionRecord = {
-    id: connectionId,
-    tenantId,
-    googleSub: id.sub,
-    email,
-    displayName: existing?.displayName ?? null,
-    scopes,
-    refreshToken,
-    status: "active",
-    statusReason: null,
-    connectedBy: existing?.connectedBy ?? actorId,
-    connectedAt: existing?.connectedAt ?? at,
-    updatedAt: at,
-    lastUsedAt: existing?.lastUsedAt ?? null,
-  };
-  await deps.store.upsertConnection(rec);
+  const connectionId = rec.id;
+  const scopes = rec.scopes;
+  const email = rec.email;
   deps.tokens.prime(
     tenantId,
     connectionId,

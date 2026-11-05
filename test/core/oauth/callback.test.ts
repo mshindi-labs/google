@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   InvalidOAuthStateError,
   MissingScopeError,
@@ -378,6 +378,54 @@ describe("oauth.handleCallback", () => {
     expect((events[1] as { scopes: string[] }).scopes).toContain(
       "https://www.googleapis.com/auth/gmail.send",
     );
+  });
+
+  it("upsertConnection failure → original error rethrown, token revoked", async () => {
+    const boom = new Error("db down");
+    vi.spyOn(store, "upsertConnection").mockRejectedValueOnce(boom);
+    await expect(connect(careers)).rejects.toBe(boom);
+    expect(fake.revoked).toHaveLength(1);
+  });
+
+  it("key provider encrypt failure → original error rethrown, token revoked", async () => {
+    const boom = new Error("kms down");
+    const { url } = await g.oauth.createAuthUrl({
+      tenantId: "t1",
+      actorId: "u1",
+      services: ["gmail"],
+    });
+    const { code, state } = fake.consent(url, careers);
+    vi.spyOn(kp, "wrap").mockRejectedValueOnce(boom);
+    await expect(g.oauth.handleCallback({ code, state })).rejects.toBe(boom);
+    expect(fake.revoked).toHaveLength(1);
+    expect(await store.listConnections("t1")).toHaveLength(0);
+  });
+
+  it("store lookup failure → original error rethrown, token revoked", async () => {
+    const boom = new Error("db down");
+    vi.spyOn(store, "findConnectionBySub").mockRejectedValueOnce(boom);
+    await expect(connect(careers)).rejects.toBe(boom);
+    expect(fake.revoked).toHaveLength(1);
+  });
+
+  it("concurrent first-time connects of one account: one wins, the loser's token is revoked", async () => {
+    const mk = async () => {
+      const { url } = await g.oauth.createAuthUrl({
+        tenantId: "t1",
+        actorId: "u1",
+        services: ["gmail"],
+      });
+      return fake.consent(url, careers);
+    };
+    const [a, b] = [await mk(), await mk()];
+    const res = await Promise.allSettled([
+      g.oauth.handleCallback(a),
+      g.oauth.handleCallback(b),
+    ]);
+    expect(res.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(res.filter((r) => r.status === "rejected")).toHaveLength(1);
+    expect(fake.revoked).toHaveLength(1);
+    expect(await store.listConnections("t1")).toHaveLength(1);
   });
 
   it("no thrown error message, stack or cause contains the code, tokens or secret", async () => {
