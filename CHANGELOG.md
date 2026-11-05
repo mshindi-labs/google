@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2](https://github.com/mshindi-labs/google/compare/google-v1.0.1...google-v1.0.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **release:** run package export tests before publishing ([db83078](https://github.com/mshindi-labs/google/commit/db830789d018851ddbcf3641750b2ef49815cf88))
+* **release:** run package export tests before publishing ([33f9ae6](https://github.com/mshindi-labs/google/commit/33f9ae6fee5e1259ae14b815908a4d17b43555aa))
+
 ## [1.0.1](https://github.com/mshindi-labs/google/compare/google-v1.0.0...google-v1.0.1) (2026-11-05)
 
 
