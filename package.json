@@ -1,6 +1,6 @@
 {
   "name": "@mshindi-labs/google",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Multi-tenant Gmail and Google API utilities for TypeScript applications",
   "repository": {
     "type": "git",
