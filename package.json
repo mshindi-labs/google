@@ -1,0 +1,122 @@
+{
+  "name": "@mshindi-labs/google",
+  "version": "0.0.0",
+  "description": "Multi-tenant Gmail and Google API utilities for TypeScript applications",
+  "type": "module",
+  "exports": {
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "require": "./dist/core.cjs"
+    },
+    "./gmail": {
+      "types": "./dist/gmail.d.ts",
+      "import": "./dist/gmail.js",
+      "require": "./dist/gmail.cjs"
+    },
+    "./postgres": {
+      "types": "./dist/postgres.d.ts",
+      "import": "./dist/postgres.js",
+      "require": "./dist/postgres.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky",
+    "prepublishOnly": "npm run build",
+    "release": "semantic-release"
+  },
+  "dependencies": {
+    "google-auth-library": "^9.15.0"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-kms": "^3.0.0",
+    "@googleapis/gmail": "^12.0.0",
+    "@google-cloud/kms": "^4.0.0",
+    "html-to-text": "^9.0.0",
+    "mailparser": "^3.0.0",
+    "nodemailer": "^6.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-kms": {
+      "optional": true
+    },
+    "@googleapis/gmail": {
+      "optional": true
+    },
+    "@google-cloud/kms": {
+      "optional": true
+    },
+    "html-to-text": {
+      "optional": true
+    },
+    "mailparser": {
+      "optional": true
+    },
+    "nodemailer": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aws-sdk/client-kms": "^3.700.0",
+    "@commitlint/cli": "^20.4.3",
+    "@commitlint/config-conventional": "^20.4.3",
+    "@commitlint/types": "^20.4.3",
+    "@electric-sql/pglite": "^0.2.0",
+    "@google-cloud/kms": "^4.5.0",
+    "@googleapis/gmail": "^12.0.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.6",
+    "@semantic-release/npm": "^12.0.1",
+    "@semantic-release/release-notes-generator": "^14.1.0",
+    "@types/html-to-text": "^9.0.4",
+    "@types/mailparser": "^3.4.5",
+    "@types/node": "^18.19.0",
+    "@types/nodemailer": "^6.4.17",
+    "conventional-changelog-conventionalcommits": "^9.2.0",
+    "html-to-text": "^9.0.5",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.3.2",
+    "mailparser": "^3.7.1",
+    "nodemailer": "^6.9.16",
+    "prettier": "^3.4.2",
+    "semantic-release": "^25.0.3",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml,css}": [
+      "prettier --write"
+    ]
+  },
+  "keywords": [
+    "google",
+    "gmail",
+    "oauth2",
+    "multi-tenant",
+    "typescript"
+  ],
+  "author": "mshindi-labs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
