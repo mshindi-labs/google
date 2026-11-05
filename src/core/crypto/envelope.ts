@@ -46,8 +46,13 @@ export function buildAad(p: {
 
 const b64 = (b: Uint8Array): string => Buffer.from(b).toString("base64url");
 const unb64 = (s: string): Buffer => {
-  if (typeof s !== "string") throw new CredentialIntegrityError();
-  return Buffer.from(s, "base64url");
+  if (typeof s !== "string" || !/^[A-Za-z0-9_-]*$/.test(s)) {
+    throw new CredentialIntegrityError();
+  }
+  const decoded = Buffer.from(s, "base64url");
+  // Reject non-canonical encodings (e.g. nonzero trailing bits).
+  if (decoded.toString("base64url") !== s) throw new CredentialIntegrityError();
+  return decoded;
 };
 
 export async function encryptValue(

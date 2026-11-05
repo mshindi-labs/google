@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CredentialIntegrityError,
   InvalidConfigError,
@@ -206,5 +206,56 @@ describe("envelope", () => {
         kp,
       ),
     ).rejects.toBeInstanceOf(CredentialIntegrityError);
+  });
+});
+
+describe("strict base64url and DEK hygiene", () => {
+  it.each(["ct", "tag", "iv", "wdek"] as const)(
+    "rejects junk-suffixed %s",
+    async (f) => {
+      const v = await encryptValue("secret", aad, kp);
+      await expect(
+        decryptValue({ ...v, [f]: v[f] + "!!*" }, aad, kp),
+      ).rejects.toBeInstanceOf(CredentialIntegrityError);
+    },
+  );
+  it.each(["ct", "tag", "iv", "wdek"] as const)(
+    "rejects padded (non-canonical) %s",
+    async (f) => {
+      const v = await encryptValue("secret", aad, kp);
+      await expect(
+        decryptValue({ ...v, [f]: v[f] + "=" }, aad, kp),
+      ).rejects.toBeInstanceOf(CredentialIntegrityError);
+    },
+  );
+  it("rejects non-canonical trailing bits", async () => {
+    const v = await encryptValue("secrets", aad, kp);
+    // iv is 12 bytes -> 16 chars, no slack; ct of 7 bytes -> 10 chars with slack bits.
+    const last = v.ct[v.ct.length - 1] as string;
+    const alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const alt = alphabet[alphabet.indexOf(last) ^ 1] as string;
+    const mutated = v.ct.slice(0, -1) + alt;
+    // Same decoded bytes, different text: must still be refused.
+    expect(
+      Buffer.from(mutated, "base64url").equals(Buffer.from(v.ct, "base64url")),
+    ).toBe(true);
+    await expect(
+      decryptValue({ ...v, ct: mutated }, aad, kp),
+    ).rejects.toBeInstanceOf(CredentialIntegrityError);
+  });
+  it("zeroes every plaintext DEK buffer created while unwrapping", async () => {
+    const v = await encryptValue("secret", aad, kp);
+    const spy = vi.spyOn(Buffer, "concat");
+    try {
+      await decryptValue(v, aad, kp);
+      const deks = spy.mock.results
+        .map((r) => r.value as Buffer)
+        .filter((b) => b.length === 32);
+      expect(deks.length).toBeGreaterThan(0);
+      for (const b of deks) expect(b.every((x) => x === 0)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

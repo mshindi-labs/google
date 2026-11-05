@@ -67,11 +67,14 @@ export class StaticKeyProvider implements KeyProvider {
       );
       d.setAAD(Buffer.from(aad, "utf8"));
       d.setAuthTag(buf.subarray(buf.length - TAG_BYTES));
-      const dek = Buffer.concat([
-        d.update(buf.subarray(IV_BYTES, buf.length - TAG_BYTES)),
-        d.final(),
-      ]);
-      return new Uint8Array(dek);
+      const head = d.update(buf.subarray(IV_BYTES, buf.length - TAG_BYTES));
+      const tail = d.final();
+      // Single plaintext DEK buffer, returned as-is so the caller's zeroing
+      // clears the only copy; intermediates are zeroed here.
+      const dek = Buffer.concat([head, tail]);
+      head.fill(0);
+      tail.fill(0);
+      return dek;
     } catch {
       throw new CredentialIntegrityError();
     }
