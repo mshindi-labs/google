@@ -3,6 +3,7 @@ import {
   CredentialIntegrityError,
   InvalidConfigError,
   KeyProviderUnavailableError,
+  MissingPeerDependencyError,
 } from "../errors.js";
 import type { KeyProvider } from "./key-provider.js";
 
@@ -115,7 +116,12 @@ export async function decryptValue(
     ]).toString("utf8");
   } catch (err) {
     // Availability is not an integrity verdict: callers may retry.
-    if (err instanceof KeyProviderUnavailableError) throw err;
+    if (
+      err instanceof KeyProviderUnavailableError ||
+      err instanceof MissingPeerDependencyError
+    ) {
+      throw err;
+    }
     // Deliberately detail-free: never reveal which part failed.
     throw new CredentialIntegrityError();
   } finally {
@@ -135,7 +141,12 @@ export async function rewrapValue(
     const { kid, wdek } = await kp.wrap(dek, aad);
     return { ...value, kid, wdek: b64(wdek) };
   } catch (err) {
-    if (err instanceof KeyProviderUnavailableError) throw err;
+    if (
+      err instanceof KeyProviderUnavailableError ||
+      err instanceof MissingPeerDependencyError
+    ) {
+      throw err;
+    }
     throw new CredentialIntegrityError();
   } finally {
     dek?.fill(0);

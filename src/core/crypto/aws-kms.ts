@@ -12,27 +12,44 @@ export type AwsKmsClientLike = {
   ): Promise<{ CiphertextBlob?: Uint8Array; Plaintext?: Uint8Array }>;
 };
 
-type AwsKmsModule = {
-  KMSClient: new () => AwsKmsClientLike;
-  EncryptCommand: new (input: Record<string, unknown>) => unknown;
-  DecryptCommand: new (input: Record<string, unknown>) => unknown;
+export type AwsKmsCommands = {
+  EncryptCommand: new (input: any) => unknown;
+  DecryptCommand: new (input: any) => unknown;
 };
+
+type AwsKmsModule = AwsKmsCommands & { KMSClient: new () => AwsKmsClientLike };
 
 /** Wraps DEKs with an AWS KMS symmetric key. kid is `aws-kms:<keyId>`. */
 export class AwsKmsKeyProvider implements KeyProvider {
   readonly currentKeyId: string;
   readonly #keyId: string;
   #client: AwsKmsClientLike | undefined;
+  #commands: AwsKmsCommands | undefined;
   #sdk: Promise<AwsKmsModule> | undefined;
 
-  constructor(opts: { keyId: string; client?: AwsKmsClientLike }) {
+  /**
+   * AWS SDK v3 `send` needs real Command instances, so the SDK is loaded
+   * lazily via loadPeer only when `client` or `commands` is not injected.
+   * Inject both (e.g. in tests) to avoid loading it at all.
+   */
+  constructor(opts: {
+    keyId: string;
+    client?: AwsKmsClientLike;
+    commands?: AwsKmsCommands;
+  }) {
     this.#keyId = opts.keyId;
     this.currentKeyId = PREFIX + opts.keyId;
     this.#client = opts.client;
+    this.#commands = opts.commands;
   }
 
-  // The SDK is loaded lazily; commands need it even for an injected client.
-  async #load(): Promise<{ sdk: AwsKmsModule; client: AwsKmsClientLike }> {
+  async #load(): Promise<{
+    sdk: AwsKmsCommands;
+    client: AwsKmsClientLike;
+  }> {
+    if (this.#client && this.#commands) {
+      return { sdk: this.#commands, client: this.#client };
+    }
     this.#sdk ??= loadPeer<AwsKmsModule>(
       "@aws-sdk/client-kms",
       "@aws-sdk/client-kms",
@@ -41,8 +58,9 @@ export class AwsKmsKeyProvider implements KeyProvider {
       throw err;
     });
     const sdk = await this.#sdk;
+    this.#commands ??= sdk;
     this.#client ??= new sdk.KMSClient();
-    return { sdk, client: this.#client };
+    return { sdk: this.#commands, client: this.#client };
   }
 
   async wrap(

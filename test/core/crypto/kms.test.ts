@@ -234,6 +234,25 @@ describe("GcpKmsKeyProvider", () => {
     );
   });
 
+  it("surfaces MissingPeerDependencyError through decryptValue and rewrapValue", async () => {
+    const aad = aadOf();
+    const enc = await encryptValue(
+      "s",
+      aad,
+      new GcpKmsKeyProvider({ keyName, client: gcpFake().client }),
+    );
+    peer.loadPeer.mockRejectedValue(
+      new MissingPeerDependencyError("@google-cloud/kms"),
+    );
+    const kp = new GcpKmsKeyProvider({ keyName });
+    for (const fn of [decryptValue, rewrapValue]) {
+      await expect(fn(enc, aad, kp)).rejects.toMatchObject({
+        name: "MissingPeerDependencyError",
+        peer: "@google-cloud/kms",
+      });
+    }
+  });
+
   it("creates the SDK client once when none is injected", async () => {
     const { client } = gcpFake();
     const ctor = vi.fn(() => client);
@@ -363,6 +382,39 @@ describe("AwsKmsKeyProvider", () => {
     await expect(
       kp.unwrap("gcp-kms:k", Buffer.from("x"), "a"),
     ).rejects.toBeInstanceOf(CredentialIntegrityError);
+  });
+
+  it("does not load the SDK when client and commands are injected", async () => {
+    const { client } = awsFake();
+    const kp = new AwsKmsKeyProvider({
+      keyId,
+      client,
+      commands: { EncryptCommand, DecryptCommand },
+    });
+    await encryptValue("s", aadOf(), kp);
+    expect(peer.loadPeer).not.toHaveBeenCalled();
+  });
+
+  it("loads the SDK once for commands when only a client is injected", async () => {
+    const { client } = awsFake();
+    const kp = new AwsKmsKeyProvider({ keyId, client });
+    await encryptValue("s", aadOf(), kp);
+    await encryptValue("s", aadOf(), kp);
+    expect(peer.loadPeer).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads the SDK and constructs the client when neither is injected", async () => {
+    const { client } = awsFake();
+    const ctor = vi.fn(() => client);
+    peer.loadPeer.mockResolvedValue({
+      EncryptCommand,
+      DecryptCommand,
+      KMSClient: ctor,
+    });
+    const kp = new AwsKmsKeyProvider({ keyId });
+    await encryptValue("s", aadOf(), kp);
+    expect(peer.loadPeer).toHaveBeenCalledTimes(1);
+    expect(ctor).toHaveBeenCalledTimes(1);
   });
 
   it("lazy-loads the SDK only when needed", async () => {
