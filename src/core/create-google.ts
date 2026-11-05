@@ -1,3 +1,4 @@
+import { createAuthUrl } from "./oauth/auth-url.js";
 import { createGoogleAuthGateway } from "./oauth/google-gateway.js";
 import type { OAuthGateway } from "./oauth/gateway.js";
 import type { KeyProvider } from "./crypto/key-provider.js";
@@ -119,9 +120,18 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
   return {
     clients,
     oauth: {
-      createAuthUrl: notImplemented,
+      createAuthUrl: (p) =>
+        createAuthUrl(
+          {
+            store: opts.store,
+            keyProvider: opts.keyProvider,
+            now,
+            callbackUrl: opts.callbackUrl,
+          },
+          p,
+        ),
       handleCallback: notImplemented,
-      purgeExpiredStates: notImplemented,
+      purgeExpiredStates: () => opts.store.deleteExpiredOAuthStates(now()),
     },
     connections: {
       list: notImplemented,
