@@ -100,7 +100,7 @@ function parseList(list: Address[] | undefined, key: string): MailAddress[] {
 }
 
 function normalizeExt(e: string): string {
-  return e.replace(/^\./, "").toLowerCase();
+  return e.trim().replace(/^\./, "").toLowerCase();
 }
 
 function cleanFilename(
@@ -113,8 +113,12 @@ function cleanFilename(
   // eslint-disable-next-line no-control-regex
   let name = base.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
   if (name === "" || name === "." || name === "..") name = "attachment";
-  const dot = name.lastIndexOf(".");
-  if (dot >= 0 && blocked.has(name.slice(dot + 1).toLowerCase())) fail(path);
+  // Windows drops trailing dots and spaces, so "cv.exe." runs as "cv.exe".
+  const effective = name.replace(/[.\s]+$/, "");
+  const dot = effective.lastIndexOf(".");
+  if (dot >= 0 && blocked.has(effective.slice(dot + 1).toLowerCase())) {
+    fail(path);
+  }
   return name;
 }
 
@@ -122,7 +126,9 @@ export function validateSendInput(
   input: SendInput,
   opts: { blockedExtensions: string[] },
 ): NormalizedMessage {
-  const blocked = new Set(opts.blockedExtensions.map(normalizeExt));
+  const blocked = new Set(
+    opts.blockedExtensions.map(normalizeExt).filter((e) => e !== ""),
+  );
 
   const to = parseList(input.to, "to");
   const cc = parseList(input.cc, "cc");
@@ -138,8 +144,10 @@ export function validateSendInput(
 
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(input.headers ?? {})) {
-    if (!HEADER_NAME.test(name)) fail(`headers.${name}`);
-    headers[name] = clean(value, `headers.${name}`);
+    // Caller-supplied name: JSON-escape (no raw CR/LF) and cap before it reaches the error.
+    const field = `headers[${JSON.stringify(name).slice(0, 64)}]`;
+    if (!HEADER_NAME.test(name)) fail(field);
+    headers[name] = clean(value, field);
   }
 
   const attachments = (input.attachments ?? []).map((a, i) => {

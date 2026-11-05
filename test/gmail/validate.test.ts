@@ -39,7 +39,7 @@ describe("validateSendInput", () => {
       { replyTo: { name: "a\n", address: "a@b.io" } },
       "replyTo.name",
     ],
-    ["header value", { headers: { "X-App": "a\nb" } }, "headers.X-App"],
+    ["header value", { headers: { "X-App": "a\nb" } }, 'headers["X-App"]'],
     [
       "filename",
       { attachments: [{ filename: "a\r\n.pdf", content: Buffer.from("x") }] },
@@ -78,7 +78,7 @@ describe("validateSendInput", () => {
     "Received",
     "X Bad",
   ])("rejects header %s", (h) =>
-    bad({ headers: { [h]: "v" } }, `headers.${h}`),
+    bad({ headers: { [h]: "v" } }, `headers[${JSON.stringify(h)}]`),
   );
   it("accepts X- headers", () =>
     expect(run({ headers: { "X-App-Id": "1" } }).headers).toEqual({
@@ -155,6 +155,36 @@ describe("validateSendInput", () => {
     );
     expect(() => f("cv.exe.pdf")).not.toThrow();
     expect(() => f("cv.pdf.exe")).toThrow();
+  });
+  it("blocks an extension hidden behind trailing dots or spaces", () => {
+    const only = (filename: string, blockedExtensions: string[]) =>
+      validateSendInput(
+        { ...base, attachments: [{ filename, content: Buffer.from("x") }] },
+        { blockedExtensions },
+      );
+    for (const name of ["cv.exe.", "cv.exe. ", "cv.exe..", "cv.EXE . "]) {
+      expect(() => only(name, ["exe"])).toThrow(
+        expect.objectContaining({ field: "attachments[0].filename" }),
+      );
+    }
+    expect(() => only("report.", [""])).not.toThrow();
+    expect(() => only("report", [""])).not.toThrow();
+    expect(() => only("report.", ["."])).not.toThrow();
+  });
+  it("header-name errors escape CR/LF and cap the field length", () => {
+    const name = "X-A\r\nFake-Log: yes" + "y".repeat(200);
+    let err: unknown;
+    try {
+      run({ headers: { [name]: "v" } });
+    } catch (e) {
+      err = e;
+    }
+    const field = (err as { field: string }).field;
+    expect(field).toMatch(/^headers\[/);
+    expect(field).not.toMatch(/[\r\n]/);
+    expect(field).toContain("\\r\\n");
+    expect(field.length).toBeLessThanOrEqual("headers[]".length + 64);
+    expect((err as Error).message).not.toMatch(/[\r\n]/);
   });
   it("validates contentType", () => {
     const f = (contentType: string) =>
