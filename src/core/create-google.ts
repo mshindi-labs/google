@@ -1,3 +1,5 @@
+import { createGoogleAuthGateway } from "./oauth/google-gateway.js";
+import type { OAuthGateway } from "./oauth/gateway.js";
 import type { KeyProvider } from "./crypto/key-provider.js";
 import { InvalidConfigError } from "./errors.js";
 import { createEmitter } from "./events.js";
@@ -9,9 +11,6 @@ import type { CredentialStore } from "./store.js";
 import { createPlaceholderTokenManager } from "./tokens.js";
 import type { TokenManager } from "./tokens.js";
 import type { ConnectionView, Logger } from "./types.js";
-
-/** Replaced by the real gateway type in Task 6. */
-export type OAuthGateway = unknown;
 
 export type CreateGoogleOptions = {
   store: CredentialStore;
@@ -136,7 +135,7 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
       now,
       callbackUrl: opts.callbackUrl,
       ...(opts.logger ? { logger: opts.logger } : {}),
-      gateway: opts.oauthGateway,
+      gateway: opts.oauthGateway ?? createGoogleAuthGateway(),
       tokens,
     },
   };
