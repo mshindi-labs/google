@@ -184,6 +184,49 @@ export function runStoreContractTests(
       expect((await store.getConnection("t1", "c1"))!.status).toBe("active");
     });
 
+    it("upsertOAuthClient update path replaces the record and leaves other tenants alone", async () => {
+      await seedClients();
+      await store.upsertOAuthClient(client("t1", "rotated"), {
+        revokeConnections: false,
+      });
+      expect((await store.getOAuthClient("t1"))!.clientSecret.ct).toBe(
+        "rotated",
+      );
+      expect(await store.getOAuthClient("t2")).toEqual(client("t2"));
+    });
+
+    it("getOAuthClient returns each tenant its own record", async () => {
+      await seedClients();
+      expect((await store.getOAuthClient("t1"))!.clientSecret.ct).toBe(
+        "secret-t1",
+      );
+      expect((await store.getOAuthClient("t2"))!.clientSecret.ct).toBe(
+        "secret-t2",
+      );
+      expect((await store.getOAuthClient("t1"))!.tenantId).toBe("t1");
+    });
+
+    it("upsertConnection allows the same googleSub in different tenants", async () => {
+      await seedClients();
+      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn("c2", "t2", "sub1"));
+      expect((await store.getConnection("t1", "c1"))!.id).toBe("c1");
+      expect((await store.getConnection("t2", "c2"))!.id).toBe("c2");
+    });
+
+    it("upsertConnection cannot take over another tenant's connection id", async () => {
+      await seedClients();
+      const original = conn("c1", "t1", "sub1");
+      await store.upsertConnection(original);
+      await expect(
+        store.upsertConnection(
+          conn("c1", "t2", "subX", { email: "evil@example.com" }),
+        ),
+      ).rejects.toThrow();
+      expect(await store.getConnection("t1", "c1")).toEqual(original);
+      expect(await store.getConnection("t2", "c1")).toBeNull();
+    });
+
     it("consumeOAuthState returns the record once, then null", async () => {
       const rec = state(1, "t1", new Date(T0.getTime() + 600_000));
       await store.insertOAuthState(rec);
@@ -250,6 +293,14 @@ export function runStoreContractTests(
 
       const key = (r: EncryptedValueRef) =>
         `${r.tenantId}|${r.record}|${r.recordId}|${r.field}`;
+      const expectedCt: Record<string, string> = {
+        "t1|oauth_client|t1|client_secret": "secret-t1",
+        "t2|oauth_client|t2|client_secret": "secret-t2",
+        "t1|connection|c1|refresh_token": "rt-c1",
+        "t2|connection|c2|refresh_token": "rt-c2",
+        [`t1|oauth_state|${hex(st.stateHash)}|code_verifier`]: "cv-7",
+      };
+      for (const r of refs) expect(r.value.ct).toBe(expectedCt[key(r)]);
       expect(refs.map(key).sort()).toEqual(
         [
           "t1|oauth_client|t1|client_secret",
@@ -283,6 +334,98 @@ export function runStoreContractTests(
       expect(consumed!.codeVerifier.ct).toBe(
         `new-oauth_state-${hex(st.stateHash)}`,
       );
+    });
+
+    it("replaceEncryptedValue ignores refs with the wrong tenantId", async () => {
+      await seedClients();
+      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      const st = state(8, "t1", new Date(T0.getTime() + 600_000));
+      await store.insertOAuthState(st);
+      const base = { value: ev("x") };
+      const bad: EncryptedValueRef[] = [
+        {
+          ...base,
+          tenantId: "t2",
+          record: "connection",
+          recordId: "c1",
+          field: "refresh_token",
+        },
+        {
+          ...base,
+          tenantId: "t2",
+          record: "oauth_client",
+          recordId: "t1",
+          field: "client_secret",
+        },
+        {
+          ...base,
+          tenantId: "t2",
+          record: "oauth_state",
+          recordId: hex(st.stateHash),
+          field: "code_verifier",
+        },
+      ];
+      for (const ref of bad) {
+        try {
+          await store.replaceEncryptedValue(ref, ev("hijacked"));
+        } catch {
+          // rejecting is acceptable; mutating is not
+        }
+      }
+      expect((await store.getConnection("t1", "c1"))!.refreshToken!.ct).toBe(
+        "rt-c1",
+      );
+      expect((await store.getOAuthClient("t1"))!.clientSecret.ct).toBe(
+        "secret-t1",
+      );
+      const consumed = await store.consumeOAuthState(hex(st.stateHash), T0);
+      expect(consumed!.codeVerifier.ct).toBe("cv-8");
+    });
+
+    it("replaceEncryptedValue during iteration visits every ref exactly once", async () => {
+      await seedClients();
+      for (let i = 0; i < 5; i++) {
+        await store.upsertConnection(conn(`c${i}`, "t1", `sub${i}`));
+      }
+      await store.insertOAuthState(
+        state(9, "t2", new Date(T0.getTime() + 600_000)),
+      );
+      const visited: string[] = [];
+      for await (const r of store.iterateEncryptedValues(2)) {
+        visited.push(`${r.record}|${r.recordId}`);
+        await store.replaceEncryptedValue(
+          r,
+          ev(`new-${r.record}-${r.recordId}`),
+        );
+      }
+      expect(visited).toHaveLength(2 + 5 + 1);
+      expect(new Set(visited).size).toBe(visited.length);
+      for (let i = 0; i < 5; i++) {
+        expect(
+          (await store.getConnection("t1", `c${i}`))!.refreshToken!.ct,
+        ).toBe(`new-connection-c${i}`);
+      }
+      expect((await store.getOAuthClient("t1"))!.clientSecret.ct).toBe(
+        "new-oauth_client-t1",
+      );
+      expect((await store.getOAuthClient("t2"))!.clientSecret.ct).toBe(
+        "new-oauth_client-t2",
+      );
+      const consumed = await store.consumeOAuthState(hex(hashBytes(9)), T0);
+      expect(consumed!.codeVerifier.ct).toBe(
+        `new-oauth_state-${hex(hashBytes(9))}`,
+      );
+    });
+
+    it("touchConnection is tenant-scoped", async () => {
+      await seedClients();
+      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.touchConnection(
+        "t2",
+        "c1",
+        new Date("2026-02-02T10:00:00.000Z"),
+      );
+      expect((await store.getConnection("t1", "c1"))!.lastUsedAt).toBeNull();
     });
 
     it("touchConnection sets lastUsedAt", async () => {
