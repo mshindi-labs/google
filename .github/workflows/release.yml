@@ -45,6 +45,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm run test:package
 
       # Authenticates with npm trusted publishing (OIDC); no npm token needed.
       - name: Publish
