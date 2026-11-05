@@ -48,7 +48,7 @@ export type OAuthApi = {
   purgeExpiredStates(): Promise<number>;
 };
 
-export const internals: unique symbol = Symbol("mshindi-google.internals");
+export const internals: unique symbol = Symbol.for("mshindi-google.internals");
 
 export type Internals = {
   store: CredentialStore;

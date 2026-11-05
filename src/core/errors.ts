@@ -1,6 +1,6 @@
 import { safeCause } from "./redact.js";
 
-export interface ErrorOptions {
+export interface GoogleErrorOptions {
   tenantId?: string;
   connectionId?: string;
   cause?: unknown;
@@ -11,7 +11,7 @@ export class GoogleLibError extends Error {
   readonly tenantId?: string;
   readonly connectionId?: string;
 
-  constructor(code: string, message: string, opts: ErrorOptions = {}) {
+  constructor(code: string, message: string, opts: GoogleErrorOptions = {}) {
     super(
       message,
       opts.cause === undefined ? undefined : { cause: safeCause(opts.cause) },
@@ -26,7 +26,7 @@ export class GoogleLibError extends Error {
 export class OAuthClientNotConfiguredError extends GoogleLibError {
   constructor(
     message = "OAuth client is not configured for this tenant",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("oauth_client_not_configured", message, opts);
   }
@@ -35,14 +35,14 @@ export class OAuthClientNotConfiguredError extends GoogleLibError {
 export class InvalidOAuthStateError extends GoogleLibError {
   constructor(
     message = "OAuth state is invalid, expired or already used",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("invalid_oauth_state", message, opts);
   }
 }
 
 export class OAuthConsentDeniedError extends GoogleLibError {
-  constructor(message = "OAuth consent was denied", opts?: ErrorOptions) {
+  constructor(message = "OAuth consent was denied", opts?: GoogleErrorOptions) {
     super("oauth_consent_denied", message, opts);
   }
 }
@@ -50,7 +50,7 @@ export class OAuthConsentDeniedError extends GoogleLibError {
 export class UnexpectedAccountError extends GoogleLibError {
   constructor(
     message = "Authorized Google account does not match the expected account",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("unexpected_account", message, opts);
   }
@@ -59,7 +59,7 @@ export class UnexpectedAccountError extends GoogleLibError {
 export class NoRefreshTokenError extends GoogleLibError {
   constructor(
     message = "Google did not return a refresh token",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("no_refresh_token", message, opts);
   }
@@ -67,7 +67,7 @@ export class NoRefreshTokenError extends GoogleLibError {
 
 export class MissingScopeError extends GoogleLibError {
   readonly required: string[];
-  constructor(required: string[], message?: string, opts?: ErrorOptions) {
+  constructor(required: string[], message?: string, opts?: GoogleErrorOptions) {
     super(
       "missing_scope",
       message ?? `Missing required scopes: ${required.join(", ")}`,
@@ -78,14 +78,14 @@ export class MissingScopeError extends GoogleLibError {
 }
 
 export class ConnectionNotFoundError extends GoogleLibError {
-  constructor(message = "Connection not found", opts?: ErrorOptions) {
+  constructor(message = "Connection not found", opts?: GoogleErrorOptions) {
     super("connection_not_found", message, opts);
   }
 }
 
 export class ConnectionRevokedError extends GoogleLibError {
   readonly reason: string;
-  constructor(reason: string, opts?: ErrorOptions) {
+  constructor(reason: string, opts?: GoogleErrorOptions) {
     super("connection_revoked", `Connection revoked: ${reason}`, opts);
     this.reason = reason;
   }
@@ -94,7 +94,7 @@ export class ConnectionRevokedError extends GoogleLibError {
 export class CredentialIntegrityError extends GoogleLibError {
   constructor(
     message = "Stored credential failed integrity verification",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("credential_integrity", message, opts);
   }
@@ -103,7 +103,7 @@ export class CredentialIntegrityError extends GoogleLibError {
 export class KeyProviderUnavailableError extends GoogleLibError {
   constructor(
     message = "Key provider is temporarily unavailable",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("key_provider_unavailable", message, opts);
   }
@@ -111,7 +111,7 @@ export class KeyProviderUnavailableError extends GoogleLibError {
 
 export class InvalidMessageError extends GoogleLibError {
   readonly field: string;
-  constructor(field: string, message?: string, opts?: ErrorOptions) {
+  constructor(field: string, message?: string, opts?: GoogleErrorOptions) {
     super(
       "invalid_message",
       message ?? `Invalid message field: ${field}`,
@@ -124,7 +124,7 @@ export class InvalidMessageError extends GoogleLibError {
 export class MessageTooLargeError extends GoogleLibError {
   readonly bytes: number;
   readonly limit: number;
-  constructor(bytes: number, limit: number, opts?: ErrorOptions) {
+  constructor(bytes: number, limit: number, opts?: GoogleErrorOptions) {
     super(
       "message_too_large",
       `Message is ${bytes} bytes; the limit is ${limit}`,
@@ -137,14 +137,17 @@ export class MessageTooLargeError extends GoogleLibError {
 
 export class RateLimitedError extends GoogleLibError {
   readonly retryAfterMs: number | null;
-  constructor(retryAfterMs: number | null, opts?: ErrorOptions) {
+  constructor(retryAfterMs: number | null, opts?: GoogleErrorOptions) {
     super("rate_limited", "Google rate limit hit", opts);
     this.retryAfterMs = retryAfterMs;
   }
 }
 
 export class DailyQuotaExceededError extends GoogleLibError {
-  constructor(message = "Daily sending quota exceeded", opts?: ErrorOptions) {
+  constructor(
+    message = "Daily sending quota exceeded",
+    opts?: GoogleErrorOptions,
+  ) {
     super("daily_quota_exceeded", message, opts);
   }
 }
@@ -152,7 +155,7 @@ export class DailyQuotaExceededError extends GoogleLibError {
 export class SendOutcomeUnknownError extends GoogleLibError {
   constructor(
     message = "Send outcome is unknown; the message may or may not have been delivered",
-    opts?: ErrorOptions,
+    opts?: GoogleErrorOptions,
   ) {
     super("send_outcome_unknown", message, opts);
   }
@@ -161,7 +164,11 @@ export class SendOutcomeUnknownError extends GoogleLibError {
 export class GoogleApiError extends GoogleLibError {
   readonly status: number;
   readonly reason: string | null;
-  constructor(status: number, reason: string | null, opts?: ErrorOptions) {
+  constructor(
+    status: number,
+    reason: string | null,
+    opts?: GoogleErrorOptions,
+  ) {
     super(
       "google_api",
       `Google API error ${status}${reason ? `: ${reason}` : ""}`,
@@ -174,7 +181,7 @@ export class GoogleApiError extends GoogleLibError {
 
 export class MissingPeerDependencyError extends GoogleLibError {
   readonly peer: string;
-  constructor(peer: string, opts?: ErrorOptions) {
+  constructor(peer: string, opts?: GoogleErrorOptions) {
     super(
       "missing_peer_dependency",
       `Optional dependency "${peer}" is required for this feature. Install it with: npm i ${peer}`,
@@ -185,7 +192,7 @@ export class MissingPeerDependencyError extends GoogleLibError {
 }
 
 export class InvalidConfigError extends GoogleLibError {
-  constructor(message: string, opts?: ErrorOptions) {
+  constructor(message: string, opts?: GoogleErrorOptions) {
     super("invalid_config", message, opts);
   }
 }

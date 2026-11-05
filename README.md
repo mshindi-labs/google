@@ -58,6 +58,11 @@ Optional peers (`@googleapis/gmail`, `nodemailer`, `html-to-text`, KMS clients) 
 loaded on first use; a missing one throws `MissingPeerDependencyError` with the
 `npm i` command to run.
 
+Every library error extends `GoogleLibError` and carries a stable `code` (for example
+`connection_revoked`). Match errors on `err.code`, not `instanceof`: if your app loads
+the ESM build of one entry point and the CommonJS build of another, each build has its
+own error classes and `instanceof` can be false for a genuine library error.
+
 ## Guides
 
 - [Tenant setup](docs/guides/tenant-setup.md): for a tenant admin creating the Google OAuth client.

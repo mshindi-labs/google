@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -54,6 +55,15 @@ describe("package exports", () => {
         "verifyAll",
       ]
     `);
+  });
+
+  it("/core types export GoogleErrorOptions, not the global-shadowing ErrorOptions", () => {
+    for (const ext of ["d.ts", "d.cts"]) {
+      const dts = readFileSync(resolve(dist, `core.${ext}`), "utf8");
+      const exported = dts.match(/^export \{[^}]*\};$/gm)?.join(" ") ?? "";
+      expect(exported).toMatch(/\btype GoogleErrorOptions\b/);
+      expect(dts).not.toMatch(/\bErrorOptions\b/);
+    }
   });
 
   it("/gmail", async () => {
@@ -129,6 +139,30 @@ describe("package exports", () => {
     const err = await send({}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(core.InvalidMessageError);
     expect(err).toBeInstanceOf(core.GoogleLibError);
+  });
+
+  it("ESM /core with CJS /gmail: send reaches validation (shared internals key)", async () => {
+    const core = await load("core");
+    const gmail = require(resolve(dist, "gmail.cjs"));
+    const testing = await load("testing");
+    const google = (core.createGoogle as (o: unknown) => unknown)({
+      store: new (testing.InMemoryStore as new () => unknown)(),
+      keyProvider: new (testing.LocalKeyProvider as new () => unknown)(),
+      callbackUrl: "https://app.example.com/cb",
+    });
+    const send = gmail.createGmail(google, {
+      transport: new (testing.CaptureTransport as new () => unknown)(),
+    }).send;
+    const err = await send({
+      tenantId: "t",
+      connectionId: "c",
+      actorId: "a",
+      to: ["a@b.co"],
+      subject: "s",
+    }).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(TypeError);
+    // instanceof is unreliable across ESM/CJS copies; match on code.
+    expect(err).toMatchObject({ code: "invalid_message", field: "html" });
   });
 
   it("package.json maps every subpath with its own CJS types", () => {
