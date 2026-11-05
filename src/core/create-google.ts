@@ -1,4 +1,5 @@
 import { createAuthUrl } from "./oauth/auth-url.js";
+import { handleCallback } from "./oauth/callback.js";
 import { createGoogleAuthGateway } from "./oauth/google-gateway.js";
 import type { OAuthGateway } from "./oauth/gateway.js";
 import type { KeyProvider } from "./crypto/key-provider.js";
@@ -108,6 +109,7 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
     redactRecipients: opts.redactRecipients ?? false,
   });
   const tokens = createPlaceholderTokenManager();
+  const gateway = opts.oauthGateway ?? createGoogleAuthGateway();
 
   const clients = createClientsApi({
     store: opts.store,
@@ -130,7 +132,20 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
           },
           p,
         ),
-      handleCallback: notImplemented,
+      handleCallback: (p) =>
+        handleCallback(
+          {
+            store: opts.store,
+            keyProvider: opts.keyProvider,
+            emit,
+            now,
+            callbackUrl: opts.callbackUrl,
+            gateway,
+            tokens,
+            ...(opts.logger ? { logger: opts.logger } : {}),
+          },
+          p,
+        ),
       purgeExpiredStates: () => opts.store.deleteExpiredOAuthStates(now()),
     },
     connections: {
@@ -145,7 +160,7 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
       now,
       callbackUrl: opts.callbackUrl,
       ...(opts.logger ? { logger: opts.logger } : {}),
-      gateway: opts.oauthGateway ?? createGoogleAuthGateway(),
+      gateway,
       tokens,
     },
   };
