@@ -9,7 +9,7 @@ import type { Emit } from "./events.js";
 import { InvalidGrantError } from "./oauth/gateway.js";
 import type { OAuthGateway } from "./oauth/gateway.js";
 import type { CredentialStore } from "./store.js";
-import type { ConnectionRecord } from "./types.js";
+import type { ConnectionRecord, Logger } from "./types.js";
 
 export type TokenManager = {
   getAccessToken(
@@ -55,6 +55,7 @@ export function createTokenManager(deps: {
   emit: Emit;
   now: () => Date;
   maxEntries?: number;
+  logger?: Logger;
 }): TokenManager {
   const maxEntries = deps.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const cache = new Map<string, Entry>();
@@ -155,7 +156,16 @@ export function createTokenManager(deps: {
         expiresAt: result.expiresAt,
       });
     }
-    await deps.store.touchConnection(tenantId, connectionId, deps.now());
+    try {
+      await deps.store.touchConnection(tenantId, connectionId, deps.now());
+    } catch {
+      // best-effort: the caller still gets the token
+      try {
+        deps.logger?.warn("google touchConnection failed");
+      } catch {
+        // logging must never break the caller
+      }
+    }
     return result.accessToken;
   };
 
@@ -188,6 +198,7 @@ export function createTokenManager(deps: {
         return { accessToken: hit.accessToken, connection };
       }
 
+      // forceRefresh deliberately joins an in-flight refresh: its token is freshly minted.
       let flight = flights.get(key);
       if (!flight) {
         const created: Flight = {

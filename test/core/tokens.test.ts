@@ -166,6 +166,36 @@ describe("token manager", () => {
     });
   });
 
+  it("rejects a cached token when the status was flipped without eviction", async () => {
+    const { connection } = await connect();
+    await tokens().getAccessToken("t1", connection.id); // primed token is cached
+    // Simulates another process revoking: this process's cache is not evicted.
+    await store.updateConnectionStatus(
+      "t1",
+      connection.id,
+      "revoked",
+      "client_changed",
+    );
+    await expect(
+      tokens().getAccessToken("t1", connection.id),
+    ).rejects.toMatchObject({
+      code: "connection_revoked",
+      reason: "client_changed",
+    });
+    expect(refreshCalls()).toBe(0);
+  });
+
+  it("touchConnection failure is best-effort and logged once", async () => {
+    const { connection } = await connect();
+    tokens().evict(connection.id);
+    store.touchConnection = async () => {
+      throw new Error("db down");
+    };
+    const r = await tokens().getAccessToken("t1", connection.id);
+    expect(r.accessToken).toMatch(/^ya29\./);
+    expect(warnings).toEqual(["google touchConnection failed"]);
+  });
+
   it("wrong tenant → ConnectionNotFoundError", async () => {
     const { connection } = await connect();
     await expect(

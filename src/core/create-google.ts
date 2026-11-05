@@ -103,6 +103,7 @@ export function createGoogle(opts: CreateGoogleOptions): GoogleCore {
     gateway,
     emit,
     now,
+    ...(opts.logger ? { logger: opts.logger } : {}),
   });
 
   const clients = createClientsApi({
