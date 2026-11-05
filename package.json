@@ -2,6 +2,14 @@
   "name": "@mshindi-labs/google",
   "version": "1.0.0",
   "description": "Multi-tenant Gmail and Google API utilities for TypeScript applications",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mshindi-labs/google.git"
+  },
+  "homepage": "https://github.com/mshindi-labs/google#readme",
+  "bugs": {
+    "url": "https://github.com/mshindi-labs/google/issues"
+  },
   "type": "module",
   "exports": {
     "./core": {
