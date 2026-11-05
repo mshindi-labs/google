@@ -51,6 +51,8 @@ export const gmail = createGmail(google);
 - `createPostgresStore` takes any `query(sql, params) => Promise<{ rows }>`. A `pg`
   `Pool` or `Client` works as is. With row-level security, give it the query function
   of a connection that has `app.tenant_id` set.
+- Using Prisma or TypeORM? Wrap the client with `fromPrisma` or `fromTypeOrm`; see
+  [orm-integration.md](./orm-integration.md).
 
 ## 3. Configure a tenant and start consent
 
