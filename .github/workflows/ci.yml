@@ -7,6 +7,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      CHECKPOINT_DISABLE: 1
     strategy:
       matrix:
         node-version: [18, 20, 24]
@@ -15,7 +17,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
-      - run: npm ci
+      # prisma 7's preinstall exits 1 on Node 18; it is a dev dependency only.
+      - run: npm ci ${{ matrix.node-version == 18 && '--ignore-scripts' || '' }}
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
