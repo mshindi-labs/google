@@ -6,17 +6,19 @@ vi.mock("../../../src/core/peer.js", () => peer);
 
 import {
   AwsKmsKeyProvider,
-  buildAad,
   CredentialIntegrityError,
-  decryptValue,
-  encryptValue,
   GcpKmsKeyProvider,
   KeyProviderUnavailableError,
   MissingPeerDependencyError,
-  rewrapValue,
   type AwsKmsClientLike,
   type GcpKmsClientLike,
 } from "../../../src/core/index.js";
+import {
+  buildAad,
+  decryptValue,
+  encryptValue,
+  rewrapValue,
+} from "../../../src/core/crypto/envelope.js";
 
 const KEK = randomBytes(32);
 const xor = (b: Uint8Array): Uint8Array =>

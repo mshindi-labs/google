@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadPeer } from "../../src/core/index.js";
+import { loadPeer } from "../../src/core/peer.js";
 
 describe("loadPeer", () => {
   it("throws MissingPeerDependencyError with install hint", async () => {

@@ -8,6 +8,7 @@ export default defineConfig({
     testing: "src/testing/index.ts",
   },
   format: ["cjs", "esm"],
+  splitting: true,
   dts: true,
   sourcemap: true,
   clean: true,

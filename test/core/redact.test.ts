@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redact } from "../../src/core/index.js";
+import { redact } from "../../src/core/redact.js";
 
 describe("redact", () => {
   it.each([

@@ -5,24 +5,44 @@
   "type": "module",
   "exports": {
     "./core": {
-      "types": "./dist/core.d.ts",
-      "import": "./dist/core.js",
-      "require": "./dist/core.cjs"
+      "import": {
+        "types": "./dist/core.d.ts",
+        "default": "./dist/core.js"
+      },
+      "require": {
+        "types": "./dist/core.d.cts",
+        "default": "./dist/core.cjs"
+      }
     },
     "./gmail": {
-      "types": "./dist/gmail.d.ts",
-      "import": "./dist/gmail.js",
-      "require": "./dist/gmail.cjs"
+      "import": {
+        "types": "./dist/gmail.d.ts",
+        "default": "./dist/gmail.js"
+      },
+      "require": {
+        "types": "./dist/gmail.d.cts",
+        "default": "./dist/gmail.cjs"
+      }
     },
     "./postgres": {
-      "types": "./dist/postgres.d.ts",
-      "import": "./dist/postgres.js",
-      "require": "./dist/postgres.cjs"
+      "import": {
+        "types": "./dist/postgres.d.ts",
+        "default": "./dist/postgres.js"
+      },
+      "require": {
+        "types": "./dist/postgres.d.cts",
+        "default": "./dist/postgres.cjs"
+      }
     },
     "./testing": {
-      "types": "./dist/testing.d.ts",
-      "import": "./dist/testing.js",
-      "require": "./dist/testing.cjs"
+      "import": {
+        "types": "./dist/testing.d.ts",
+        "default": "./dist/testing.js"
+      },
+      "require": {
+        "types": "./dist/testing.d.cts",
+        "default": "./dist/testing.cjs"
+      }
     }
   },
   "files": [
@@ -33,6 +53,7 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
+    "test:package": "vitest run --config vitest.package.config.ts",
     "typecheck": "tsc --noEmit",
     "prepare": "husky",
     "prepublishOnly": "npm run build"

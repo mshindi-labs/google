@@ -4,11 +4,13 @@ import {
   CredentialIntegrityError,
   InvalidConfigError,
   StaticKeyProvider,
+} from "../../../src/core/index.js";
+import {
   buildAad,
   decryptValue,
   encryptValue,
   rewrapValue,
-} from "../../../src/core/index.js";
+} from "../../../src/core/crypto/envelope.js";
 
 function flipFirstByte(b64url: string): string {
   const buf = Buffer.from(b64url, "base64url");

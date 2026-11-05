@@ -18,8 +18,8 @@ import {
   RateLimitedError,
   SendOutcomeUnknownError,
   UnexpectedAccountError,
-  safeCause,
 } from "../../src/core/index.js";
+import { safeCause } from "../../src/core/redact.js";
 
 describe("errors", () => {
   it("carries code and ids", () => {
