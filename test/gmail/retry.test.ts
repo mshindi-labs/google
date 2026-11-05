@@ -260,4 +260,35 @@ describe("withSendRetry", () => {
     expect(err.name).toBe("SendUnauthorizedSignal");
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["EPIPE", net("EPIPE")],
+    ["ECONNABORTED", net("ECONNABORTED")],
+    ["ERR_STREAM_PREMATURE_CLOSE", net("ERR_STREAM_PREMATURE_CLOSE")],
+    [
+      "request-timeout",
+      Object.assign(new Error("t"), { type: "request-timeout" }),
+    ],
+    ["plain TypeError", new TypeError("boom")],
+  ])("%s is outcome-unknown and never retried", async (_n, e) => {
+    const fn = vi.fn(async () => {
+      throw e;
+    });
+    await expect(withSendRetry(fn, opts())).rejects.toBeInstanceOf(
+      SendOutcomeUnknownError,
+    );
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("Retry-After beyond capMs throws RateLimitedError without sleeping", async () => {
+    const fn = vi.fn(async () => {
+      throw http(429, undefined, { headers: { "retry-after": "3600" } });
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+    const err = await withSendRetry(fn, opts(sleep)).catch((e) => e);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect(err.retryAfterMs).toBe(3_600_000);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
 });

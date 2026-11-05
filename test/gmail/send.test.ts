@@ -229,15 +229,14 @@ describe("createGmail().send", () => {
     });
   });
 
-  it("uses 'unknown' errorCode for non-library errors", async () => {
+  it("a status-less non-library error is outcome-unknown", async () => {
     const send = vi.fn(async () => {
       throw new TypeError("boom");
     });
-    // classifier wraps unknown errors, so the code is google_api
     await expect(gmailWith({ send }).send(base())).rejects.toBeInstanceOf(
-      GoogleLibError,
+      SendOutcomeUnknownError,
     );
-    expect(events[0]).toMatchObject({ errorCode: "google_api" });
+    expect(events[0]).toMatchObject({ errorCode: "send_outcome_unknown" });
   });
 
   it("redactRecipients per call hashes addresses in events", async () => {

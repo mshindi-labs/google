@@ -9,6 +9,7 @@ vi.mock("@googleapis/gmail", () => ({
   },
 }));
 
+import { SendOutcomeUnknownError } from "../../src/core/errors.js";
 import {
   UPLOAD_THRESHOLD_BYTES,
   createGmailApiTransport,
@@ -82,14 +83,25 @@ describe("createGmailApiTransport", () => {
     ).resolves.toEqual({ messageId: "m1", threadId: "t1" });
   });
 
-  it("throws when the response lacks an id", async () => {
+  it("treats a 200 without threadId as success (request threadId, else id)", async () => {
     h.send.mockResolvedValue({ data: { id: "m1" } });
+    const t = createGmailApiTransport();
+    await expect(
+      t.send({ accessToken: "tok", raw: Buffer.from("x"), threadId: "th9" }),
+    ).resolves.toEqual({ messageId: "m1", threadId: "th9" });
+    await expect(
+      t.send({ accessToken: "tok", raw: Buffer.from("x"), threadId: null }),
+    ).resolves.toEqual({ messageId: "m1", threadId: "m1" });
+  });
+
+  it("a 200 without an id is SendOutcomeUnknownError", async () => {
+    h.send.mockResolvedValue({ data: { threadId: "t1" } });
     await expect(
       createGmailApiTransport().send({
         accessToken: "tok",
         raw: Buffer.from("x"),
         threadId: null,
       }),
-    ).rejects.toThrow();
+    ).rejects.toBeInstanceOf(SendOutcomeUnknownError);
   });
 });

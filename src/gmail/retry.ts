@@ -133,9 +133,13 @@ export function classifySendError(err: unknown): SendErrorClass {
       error: new SendOutcomeUnknownError(undefined, opts),
     };
   }
+  if (status !== null) {
+    return { kind: "fail", error: new GoogleApiError(status, reason, opts) };
+  }
+  // No HTTP status and not provably pre-send: the request may have been written (I7).
   return {
     kind: "fail",
-    error: new GoogleApiError(status ?? 0, reason ?? code, opts),
+    error: new SendOutcomeUnknownError(undefined, opts),
   };
 }
 
@@ -172,6 +176,9 @@ export async function withSendRetry<T>(
       const c = classifySendError(err);
       if (c.kind === "fail") throw c.error;
       if (c.kind === "unauthorized") throw new SendUnauthorizedSignal();
+      if (c.delayMs !== null && c.delayMs > capMs) {
+        throw new RateLimitedError(c.delayMs, { cause: err });
+      }
       if (attempt + 1 >= maxAttempts) {
         const e = asErr(err);
         if (readStatus(e) !== null) {

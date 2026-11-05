@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { OAuth2Client } from "google-auth-library";
-import { GoogleApiError } from "../core/errors.js";
+import { SendOutcomeUnknownError } from "../core/errors.js";
 import { loadPeer } from "../core/peer.js";
 
 /** Raw messages above this size go through the media upload endpoint. */
@@ -53,10 +53,12 @@ export function createGmailApiTransport(): GmailTransport {
               requestBody: { ...thread },
               media: { mimeType: "message/rfc822", body: Readable.from(raw) },
             });
-      if (!data?.id || !data.threadId) {
-        throw new GoogleApiError(200, "missing_message_id");
-      }
-      return { messageId: data.id, threadId: data.threadId };
+      // Google answered 200: the message was sent, so never report a plain failure (I7).
+      if (!data?.id) throw new SendOutcomeUnknownError();
+      return {
+        messageId: data.id,
+        threadId: data.threadId || threadId || data.id,
+      };
     },
   };
 }
