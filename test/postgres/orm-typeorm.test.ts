@@ -1,4 +1,4 @@
-import { DataSource } from "typeorm";
+import { DataSource, QueryFailedError } from "typeorm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   createPostgresStore,
@@ -97,6 +97,34 @@ describe("PostgresStore via TypeORM (pinned QueryRunner)", () => {
     } finally {
       await runner.release();
     }
+  });
+});
+
+describe("TypeORM errors through the wrapper", () => {
+  it("keep QueryFailedError and its code but drop the bound parameters", async () => {
+    await fresh();
+    const store = createPostgresStore({ query: fromTypeOrm(ds) });
+    const err = await store
+      .upsertConnection({
+        id: "00000000-0000-4000-8000-000000000001",
+        tenantId: "no-such-tenant",
+        googleSub: "sub-SECRET",
+        email: "secret@example.com",
+        displayName: null,
+        scopes: [],
+        refreshToken: ev("ciphertext-SECRET"),
+        status: "active",
+        statusReason: null,
+        connectedBy: "a",
+        connectedAt: T0,
+        updatedAt: T0,
+        lastUsedAt: null,
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(QueryFailedError);
+    expect(err).toMatchObject({ code: "23503" });
+    expect((err as { parameters?: unknown }).parameters).toBeUndefined();
+    expect(JSON.stringify(err)).not.toContain("SECRET");
   });
 });
 

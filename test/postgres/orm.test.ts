@@ -98,6 +98,80 @@ describe("fromTypeOrm", () => {
   });
 });
 
+describe("fromTypeOrm error hygiene", () => {
+  const failing = () =>
+    Object.assign(new Error("duplicate key"), {
+      code: "23505",
+      constraint: "google_connections_pkey",
+      query: SQL,
+      parameters: ["SECRET"],
+    });
+
+  it("strips parameters from a QueryRunner error and rethrows the same object", async () => {
+    const boom = failing();
+    const err = await fromTypeOrm(runner(() => Promise.reject(boom)))(
+      SQL,
+      PARAMS,
+    ).catch((e: unknown) => e);
+    expect(err).toBe(boom);
+    expect((err as { parameters?: unknown }).parameters).toBeUndefined();
+    expect(err).toMatchObject({ code: "23505", message: "duplicate key" });
+  });
+
+  it("strips parameters on the DataSource path too", async () => {
+    const boom = failing();
+    const r = runner(() => Promise.reject(boom));
+    const err = await fromTypeOrm({ createQueryRunner: () => r })(
+      SQL,
+      PARAMS,
+    ).catch((e: unknown) => e);
+    expect(err).toBe(boom);
+    expect((err as { parameters?: unknown }).parameters).toBeUndefined();
+    expect(JSON.stringify(err)).not.toContain("SECRET");
+    expect(r.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not add a parameters property to errors without one", async () => {
+    const boom = new Error("plain");
+    const err = await fromTypeOrm(runner(() => Promise.reject(boom)))(
+      SQL,
+      PARAMS,
+    ).catch((e: unknown) => e);
+    expect(err).toBe(boom);
+    expect(Object.prototype.hasOwnProperty.call(err, "parameters")).toBe(false);
+  });
+
+  it("rethrows the query error when release() also fails", async () => {
+    const boom = failing();
+    const r = runner(() => Promise.reject(boom));
+    r.release.mockRejectedValueOnce(new Error("release failed"));
+    const err = await fromTypeOrm({ createQueryRunner: () => r })(
+      SQL,
+      PARAMS,
+    ).catch((e: unknown) => e);
+    expect(err).toBe(boom);
+  });
+
+  it("surfaces a release failure after a successful query", async () => {
+    const r = runner({ records: [] });
+    const relErr = new Error("release failed");
+    r.release.mockRejectedValueOnce(relErr);
+    await expect(
+      fromTypeOrm({ createQueryRunner: () => r })(SQL, PARAMS),
+    ).rejects.toBe(relErr);
+  });
+
+  it("treats an object with both createQueryRunner and release as a pinned runner", async () => {
+    const r = Object.assign(runner({ records: [{ a: 1 }] }), {
+      createQueryRunner: vi.fn(),
+    });
+    expect(await fromTypeOrm(r)(SQL, PARAMS)).toEqual({ rows: [{ a: 1 }] });
+    expect(r.createQueryRunner).not.toHaveBeenCalled();
+    expect(r.query).toHaveBeenCalledWith(SQL, PARAMS, true);
+    expect(r.release).not.toHaveBeenCalled();
+  });
+});
+
 describe("fromPrisma", () => {
   it("spreads params into $queryRawUnsafe and wraps the array as rows", async () => {
     const client = { $queryRawUnsafe: vi.fn(async () => [{ a: 1 }]) };

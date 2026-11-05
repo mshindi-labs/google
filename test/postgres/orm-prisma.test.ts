@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -17,7 +23,10 @@ import { startPgSocket, TRUNCATE_ALL } from "./pg-socket.js";
 // pglite-socket. The schema is the one published in the ORM guide, so this
 // suite also checks that the guide's models match the migration.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const work = resolve(root, "node_modules/.cache/google-orm-prisma");
+// A unique dir per run, inside the repo so the generated client resolves
+// @prisma/client from node_modules.
+const cache = resolve(root, "node_modules/.cache");
+let work: string;
 const prismaCli = resolve(root, "node_modules/prisma/build/index.js");
 
 const guideSchema = (): string => {
@@ -46,7 +55,8 @@ let prisma: Client;
 
 beforeAll(async () => {
   pg = await startPgSocket();
-  mkdirSync(work, { recursive: true });
+  mkdirSync(cache, { recursive: true });
+  work = mkdtempSync(resolve(cache, "google-orm-prisma-"));
   writeFileSync(resolve(work, "schema.prisma"), guideSchema());
   writeFileSync(
     resolve(work, "prisma.config.ts"),
@@ -64,6 +74,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma?.$disconnect();
   await pg?.stop();
+  if (work) rmSync(work, { recursive: true, force: true });
 });
 
 runStoreContractTests(

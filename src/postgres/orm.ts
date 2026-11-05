@@ -43,10 +43,41 @@ export type TypeOrmDataSourceLike = {
   createQueryRunner(): TypeOrmQueryRunnerLike;
 };
 
+// A QueryRunner also exposes `release`; anything with `release` is treated as
+// a caller-owned runner, even if it also has `createQueryRunner`.
 const isDataSource = (
   s: TypeOrmDataSourceLike | TypeOrmQueryRunnerLike,
 ): s is TypeOrmDataSourceLike =>
-  typeof (s as TypeOrmDataSourceLike).createQueryRunner === "function";
+  typeof (s as TypeOrmDataSourceLike).createQueryRunner === "function" &&
+  typeof (s as TypeOrmQueryRunnerLike).release !== "function";
+
+// TypeORM's QueryFailedError carries every bound parameter (encrypted
+// envelopes, emails, Google subject ids). Drop them; keep the same object so
+// `instanceof`, `code`, `constraint` and `message` still work.
+const scrub = (err: unknown): unknown => {
+  if (err !== null && typeof err === "object" && "parameters" in err) {
+    try {
+      (err as { parameters?: unknown }).parameters = undefined;
+    } catch {
+      // A frozen or getter-only error is rethrown as is.
+    }
+  }
+  return err;
+};
+
+const run = async (
+  runner: TypeOrmQueryRunnerLike,
+  sql: string,
+  params: unknown[],
+): Promise<{ rows: unknown[] }> => {
+  let result: unknown;
+  try {
+    result = await runner.query(sql, params, true);
+  } catch (err) {
+    throw scrub(err);
+  }
+  return { rows: structuredRows(result) };
+};
 
 const structuredRows = (result: unknown): unknown[] => {
   const records = (result as { records?: unknown } | null | undefined)?.records;
@@ -69,8 +100,13 @@ const structuredRows = (result: unknown): unknown[] => {
  * rotation) look like they matched a row when they did not.
  *
  * Given a DataSource, a QueryRunner is created per call and released after
- * it. Given a QueryRunner (for example one pinned for row-level security),
- * it is used as is and never released: the caller owns its lifetime.
+ * it. Given a QueryRunner (for example one pinned for row-level security, or
+ * `manager.queryRunner` inside `dataSource.transaction`), it is used as is and
+ * never released: the caller owns its lifetime. An object with a `release`
+ * method counts as a QueryRunner even if it also has `createQueryRunner`.
+ *
+ * Errors are rethrown as the same object, with TypeORM's `parameters`
+ * property cleared so bound values (ciphertext, emails) do not leak into logs.
  */
 export function fromTypeOrm(
   source: TypeOrmDataSourceLike | TypeOrmQueryRunnerLike,
@@ -78,14 +114,18 @@ export function fromTypeOrm(
   if (isDataSource(source)) {
     return (async (sql: string, params: unknown[]) => {
       const runner = source.createQueryRunner();
+      let out: { rows: unknown[] };
       try {
-        return { rows: structuredRows(await runner.query(sql, params, true)) };
-      } finally {
-        await runner.release();
+        out = await run(runner, sql, params);
+      } catch (err) {
+        // A release failure must not hide the query error.
+        await runner.release().catch(() => {});
+        throw err;
       }
+      await runner.release();
+      return out;
     }) as Query;
   }
-  return (async (sql: string, params: unknown[]) => ({
-    rows: structuredRows(await source.query(sql, params, true)),
-  })) as Query;
+  return ((sql: string, params: unknown[]) =>
+    run(source, sql, params)) as Query;
 }
