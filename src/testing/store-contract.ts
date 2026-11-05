@@ -29,6 +29,10 @@ const ev = (ct: string): EncryptedValue => ({
   tag: "AA",
 });
 
+/** Connection ids are UUIDs so the Postgres adapter can use a uuid column. */
+const C = (n: number): string =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
 const T0 = new Date("2026-01-01T00:00:00.000Z");
 
 const client = (
@@ -118,31 +122,31 @@ export function runStoreContractTests(
 
     it("isolates tenants on getConnection", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      expect(await store.getConnection("t2", "c1")).toBeNull();
-      expect((await store.getConnection("t1", "c1"))!.id).toBe("c1");
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      expect(await store.getConnection("t2", C(1))).toBeNull();
+      expect((await store.getConnection("t1", C(1)))!.id).toBe(C(1));
     });
 
     it("listConnections excludes other tenants", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      await store.upsertConnection(conn("c2", "t2", "sub2"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      await store.upsertConnection(conn(C(2), "t2", "sub2"));
       const list = await store.listConnections("t1");
-      expect(list.map((c) => c.id)).toEqual(["c1"]);
+      expect(list.map((c) => c.id)).toEqual([C(1)]);
     });
 
     it("findConnectionBySub is tenant-scoped", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      expect((await store.findConnectionBySub("t1", "sub1"))!.id).toBe("c1");
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      expect((await store.findConnectionBySub("t1", "sub1"))!.id).toBe(C(1));
       expect(await store.findConnectionBySub("t2", "sub1")).toBeNull();
     });
 
     it("upsertConnection with same (tenant, sub) and same id updates in place", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
       await store.upsertConnection(
-        conn("c1", "t1", "sub1", { email: "new@example.com" }),
+        conn(C(1), "t1", "sub1", { email: "new@example.com" }),
       );
       const list = await store.listConnections("t1");
       expect(list).toHaveLength(1);
@@ -151,18 +155,18 @@ export function runStoreContractTests(
 
     it("upsertConnection with a different id but same (tenant, sub) rejects", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
       await expect(
-        store.upsertConnection(conn("c2", "t1", "sub1")),
+        store.upsertConnection(conn(C(2), "t1", "sub1")),
       ).rejects.toThrow();
       expect(await store.listConnections("t1")).toHaveLength(1);
     });
 
     it("upsertOAuthClient with revokeConnections revokes only that tenant", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      await store.upsertConnection(conn("c2", "t1", "sub2"));
-      await store.upsertConnection(conn("c3", "t2", "sub3"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      await store.upsertConnection(conn(C(2), "t1", "sub2"));
+      await store.upsertConnection(conn(C(3), "t2", "sub3"));
       await store.upsertOAuthClient(client("t1", "rotated"), {
         revokeConnections: true,
       });
@@ -170,18 +174,18 @@ export function runStoreContractTests(
         expect(c.status).toBe("revoked");
         expect(c.statusReason).toBe("client_changed");
       }
-      const other = await store.getConnection("t2", "c3");
+      const other = await store.getConnection("t2", C(3));
       expect(other!.status).toBe("active");
       expect(other!.statusReason).toBeNull();
     });
 
     it("upsertOAuthClient without revokeConnections leaves connections alone", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
       await store.upsertOAuthClient(client("t1", "rotated"), {
         revokeConnections: false,
       });
-      expect((await store.getConnection("t1", "c1"))!.status).toBe("active");
+      expect((await store.getConnection("t1", C(1)))!.status).toBe("active");
     });
 
     it("upsertOAuthClient update path replaces the record and leaves other tenants alone", async () => {
@@ -208,23 +212,23 @@ export function runStoreContractTests(
 
     it("upsertConnection allows the same googleSub in different tenants", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      await store.upsertConnection(conn("c2", "t2", "sub1"));
-      expect((await store.getConnection("t1", "c1"))!.id).toBe("c1");
-      expect((await store.getConnection("t2", "c2"))!.id).toBe("c2");
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      await store.upsertConnection(conn(C(2), "t2", "sub1"));
+      expect((await store.getConnection("t1", C(1)))!.id).toBe(C(1));
+      expect((await store.getConnection("t2", C(2)))!.id).toBe(C(2));
     });
 
     it("upsertConnection cannot take over another tenant's connection id", async () => {
       await seedClients();
-      const original = conn("c1", "t1", "sub1");
+      const original = conn(C(1), "t1", "sub1");
       await store.upsertConnection(original);
       await expect(
         store.upsertConnection(
-          conn("c1", "t2", "subX", { email: "evil@example.com" }),
+          conn(C(1), "t2", "subX", { email: "evil@example.com" }),
         ),
       ).rejects.toThrow();
-      expect(await store.getConnection("t1", "c1")).toEqual(original);
-      expect(await store.getConnection("t2", "c1")).toBeNull();
+      expect(await store.getConnection("t1", C(1))).toEqual(original);
+      expect(await store.getConnection("t2", C(1))).toBeNull();
     });
 
     it("consumeOAuthState returns the record once, then null", async () => {
@@ -280,10 +284,10 @@ export function runStoreContractTests(
 
     it("iterateEncryptedValues yields every encrypted field across tenants; replaceEncryptedValue persists", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      await store.upsertConnection(conn("c2", "t2", "sub2"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      await store.upsertConnection(conn(C(2), "t2", "sub2"));
       await store.upsertConnection(
-        conn("c3", "t2", "sub3", { refreshToken: null, status: "revoked" }),
+        conn(C(3), "t2", "sub3", { refreshToken: null, status: "revoked" }),
       );
       const st = state(7, "t1", new Date(T0.getTime() + 600_000));
       await store.insertOAuthState(st);
@@ -296,8 +300,8 @@ export function runStoreContractTests(
       const expectedCt: Record<string, string> = {
         "t1|oauth_client|t1|client_secret": "secret-t1",
         "t2|oauth_client|t2|client_secret": "secret-t2",
-        "t1|connection|c1|refresh_token": "rt-c1",
-        "t2|connection|c2|refresh_token": "rt-c2",
+        [`t1|connection|${C(1)}|refresh_token`]: `rt-${C(1)}`,
+        [`t2|connection|${C(2)}|refresh_token`]: `rt-${C(2)}`,
         [`t1|oauth_state|${hex(st.stateHash)}|code_verifier`]: "cv-7",
       };
       for (const r of refs) expect(r.value.ct).toBe(expectedCt[key(r)]);
@@ -305,8 +309,8 @@ export function runStoreContractTests(
         [
           "t1|oauth_client|t1|client_secret",
           "t2|oauth_client|t2|client_secret",
-          "t1|connection|c1|refresh_token",
-          "t2|connection|c2|refresh_token",
+          `t1|connection|${C(1)}|refresh_token`,
+          `t2|connection|${C(2)}|refresh_token`,
           `t1|oauth_state|${hex(st.stateHash)}|code_verifier`,
         ].sort(),
       );
@@ -323,13 +327,13 @@ export function runStoreContractTests(
       expect((await store.getOAuthClient("t2"))!.clientSecret.ct).toBe(
         "new-oauth_client-t2",
       );
-      expect((await store.getConnection("t1", "c1"))!.refreshToken!.ct).toBe(
-        "new-connection-c1",
+      expect((await store.getConnection("t1", C(1)))!.refreshToken!.ct).toBe(
+        `new-connection-${C(1)}`,
       );
-      expect((await store.getConnection("t2", "c2"))!.refreshToken!.ct).toBe(
-        "new-connection-c2",
+      expect((await store.getConnection("t2", C(2)))!.refreshToken!.ct).toBe(
+        `new-connection-${C(2)}`,
       );
-      expect((await store.getConnection("t2", "c3"))!.refreshToken).toBeNull();
+      expect((await store.getConnection("t2", C(3)))!.refreshToken).toBeNull();
       const consumed = await store.consumeOAuthState(hex(st.stateHash), T0);
       expect(consumed!.codeVerifier.ct).toBe(
         `new-oauth_state-${hex(st.stateHash)}`,
@@ -338,7 +342,7 @@ export function runStoreContractTests(
 
     it("replaceEncryptedValue ignores refs with the wrong tenantId", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
       const st = state(8, "t1", new Date(T0.getTime() + 600_000));
       await store.insertOAuthState(st);
       const base = { value: ev("x") };
@@ -347,7 +351,7 @@ export function runStoreContractTests(
           ...base,
           tenantId: "t2",
           record: "connection",
-          recordId: "c1",
+          recordId: C(1),
           field: "refresh_token",
         },
         {
@@ -372,8 +376,8 @@ export function runStoreContractTests(
           // rejecting is acceptable; mutating is not
         }
       }
-      expect((await store.getConnection("t1", "c1"))!.refreshToken!.ct).toBe(
-        "rt-c1",
+      expect((await store.getConnection("t1", C(1)))!.refreshToken!.ct).toBe(
+        `rt-${C(1)}`,
       );
       expect((await store.getOAuthClient("t1"))!.clientSecret.ct).toBe(
         "secret-t1",
@@ -385,7 +389,7 @@ export function runStoreContractTests(
     it("replaceEncryptedValue during iteration visits every ref exactly once", async () => {
       await seedClients();
       for (let i = 0; i < 5; i++) {
-        await store.upsertConnection(conn(`c${i}`, "t1", `sub${i}`));
+        await store.upsertConnection(conn(C(i), "t1", `sub${i}`));
       }
       await store.insertOAuthState(
         state(9, "t2", new Date(T0.getTime() + 600_000)),
@@ -401,9 +405,9 @@ export function runStoreContractTests(
       expect(visited).toHaveLength(2 + 5 + 1);
       expect(new Set(visited).size).toBe(visited.length);
       for (let i = 0; i < 5; i++) {
-        expect(
-          (await store.getConnection("t1", `c${i}`))!.refreshToken!.ct,
-        ).toBe(`new-connection-c${i}`);
+        expect((await store.getConnection("t1", C(i)))!.refreshToken!.ct).toBe(
+          `new-connection-${C(i)}`,
+        );
       }
       expect((await store.getOAuthClient("t1"))!.clientSecret.ct).toBe(
         "new-oauth_client-t1",
@@ -419,32 +423,32 @@ export function runStoreContractTests(
 
     it("touchConnection is tenant-scoped", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
       await store.touchConnection(
         "t2",
-        "c1",
+        C(1),
         new Date("2026-02-02T10:00:00.000Z"),
       );
-      expect((await store.getConnection("t1", "c1"))!.lastUsedAt).toBeNull();
+      expect((await store.getConnection("t1", C(1)))!.lastUsedAt).toBeNull();
     });
 
     it("touchConnection sets lastUsedAt", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
       const at = new Date("2026-02-02T10:00:00.000Z");
-      await store.touchConnection("t1", "c1", at);
-      const got = await store.getConnection("t1", "c1");
+      await store.touchConnection("t1", C(1), at);
+      const got = await store.getConnection("t1", C(1));
       expect(got!.lastUsedAt).toBeInstanceOf(Date);
       expect(got!.lastUsedAt!.getTime()).toBe(at.getTime());
     });
 
     it("updateConnectionStatus sets status and reason (tenant-scoped)", async () => {
       await seedClients();
-      await store.upsertConnection(conn("c1", "t1", "sub1"));
-      await store.updateConnectionStatus("t2", "c1", "error", "wrong tenant");
-      expect((await store.getConnection("t1", "c1"))!.status).toBe("active");
-      await store.updateConnectionStatus("t1", "c1", "error", "invalid_grant");
-      const got = await store.getConnection("t1", "c1");
+      await store.upsertConnection(conn(C(1), "t1", "sub1"));
+      await store.updateConnectionStatus("t2", C(1), "error", "wrong tenant");
+      expect((await store.getConnection("t1", C(1)))!.status).toBe("active");
+      await store.updateConnectionStatus("t1", C(1), "error", "invalid_grant");
+      const got = await store.getConnection("t1", C(1));
       expect(got!.status).toBe("error");
       expect(got!.statusReason).toBe("invalid_grant");
     });

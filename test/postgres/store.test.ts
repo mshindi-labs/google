@@ -1,0 +1,112 @@
+import { PGlite } from "@electric-sql/pglite";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { InvalidConfigError } from "../../src/core/errors.js";
+import { getMigrations } from "../../src/postgres/migrations.js";
+import { createPostgresStore, type Query } from "../../src/postgres/index.js";
+import { runStoreContractTests } from "../../src/testing/index.js";
+
+const open: PGlite[] = [];
+afterEach(async () => {
+  while (open.length) await open.pop()!.close();
+});
+
+async function freshDb(opts?: { schema?: string; tablePrefix?: string }) {
+  const pg = new PGlite();
+  open.push(pg);
+  if (opts?.schema) await pg.exec(`create schema "${opts.schema}"`);
+  for (const m of getMigrations(opts)) await pg.exec(m.sql);
+  const query: Query = (sql, params) =>
+    pg.query(sql, params) as Promise<{ rows: never[] }>;
+  return { pg, query };
+}
+
+runStoreContractTests(
+  "PostgresStore",
+  async () => {
+    const { query } = await freshDb();
+    return createPostgresStore({ query });
+  },
+  { describe, it, expect, beforeEach },
+);
+
+const ev = (ct: string) => ({
+  v: 1 as const,
+  kid: "k",
+  wdek: "AA",
+  iv: "AA",
+  ct,
+  tag: "AA",
+});
+const T0 = new Date("2026-01-01T00:00:00.000Z");
+const client = (tenantId: string) => ({
+  tenantId,
+  clientId: "cid",
+  clientSecret: ev("s"),
+  secretHint: "h",
+  hostedDomain: null,
+  createdBy: "a",
+  createdAt: T0,
+  updatedBy: "a",
+  updatedAt: T0,
+});
+
+describe("PostgresStore extras", () => {
+  it("runs with a custom schema and prefix", async () => {
+    const o = { schema: "mail", tablePrefix: "gx_" };
+    const { query } = await freshDb(o);
+    const store = createPostgresStore({ query, ...o });
+    await store.upsertOAuthClient(client("t1"), { revokeConnections: false });
+    expect((await store.getOAuthClient("t1"))!.clientId).toBe("cid");
+  });
+
+  it("rejects unsafe identifiers", () => {
+    const query: Query = async () => ({ rows: [] });
+    expect(() =>
+      createPostgresStore({ query, schema: "public; drop" }),
+    ).toThrow(InvalidConfigError);
+    expect(() => createPostgresStore({ query, tablePrefix: "A-b" })).toThrow(
+      InvalidConfigError,
+    );
+  });
+
+  it("client_changed revoke is atomic in one statement", async () => {
+    const { query } = await freshDb();
+    const spy = vi.fn(query) as unknown as Query;
+    const store = createPostgresStore({ query: spy });
+    await store.upsertOAuthClient(client("t1"), { revokeConnections: false });
+    (spy as unknown as ReturnType<typeof vi.fn>).mockClear();
+    await store.upsertOAuthClient(client("t1"), { revokeConnections: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores encrypted values as jsonb, not text", async () => {
+    const { query } = await freshDb();
+    const store = createPostgresStore({ query });
+    await store.upsertOAuthClient(client("t1"), { revokeConnections: false });
+    const r = await query<{ t: string }>(
+      "select jsonb_typeof(client_secret) as t from google_oauth_clients",
+      [],
+    );
+    expect(r.rows[0]!.t).toBe("object");
+  });
+
+  it("writes audit events with payload minus column fields", async () => {
+    const { query } = await freshDb();
+    const store = createPostgresStore({ query });
+    await store.insertAuditEvent!({
+      type: "connection.revoked",
+      tenantId: "t1",
+      connectionId: "00000000-0000-4000-8000-000000000001",
+      reason: "x",
+      at: T0,
+    });
+    const r = await query<{
+      type: string;
+      payload: Record<string, unknown>;
+      actor_id: string | null;
+    }>("select type, actor_id, payload from google_audit_events", []);
+    expect(r.rows[0]!.type).toBe("connection.revoked");
+    expect(r.rows[0]!.actor_id).toBeNull();
+    expect(r.rows[0]!.payload).toEqual({ reason: "x", at: T0.toISOString() });
+  });
+});
