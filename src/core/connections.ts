@@ -34,7 +34,7 @@ export function sanitizeDisplayName(v: string | null): string | null {
   if (v === null) return null;
   // eslint-disable-next-line no-control-regex
   const s = v.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
-  return s.slice(0, MAX_DISPLAY_NAME).trim() || null;
+  return Array.from(s).slice(0, MAX_DISPLAY_NAME).join("").trim() || null;
 }
 
 export function createConnectionsApi(deps: {

@@ -3,6 +3,7 @@ import {
   ConnectionNotFoundError,
   ConnectionRevokedError,
 } from "../../src/core/errors.js";
+import { sanitizeDisplayName } from "../../src/core/connections.js";
 import { createGoogle } from "../../src/core/create-google.js";
 import { internals } from "../../src/core/create-google.js";
 import type { GoogleEvent } from "../../src/core/events.js";
@@ -233,5 +234,14 @@ describe("connections api", () => {
       (await store.getConnection("t1", connection.id))?.refreshToken,
     ).toBeNull();
     expect(events[0]).toMatchObject({ googleRevoke: "failed" });
+  });
+});
+
+describe("sanitizeDisplayName", () => {
+  it("caps at 100 code points without splitting surrogate pairs", () => {
+    const out = sanitizeDisplayName("x".repeat(99) + "😀" + "tail");
+    expect(out).toBe("x".repeat(99) + "😀");
+    expect(Array.from(out ?? "")).toHaveLength(100);
+    expect(out).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
   });
 });
