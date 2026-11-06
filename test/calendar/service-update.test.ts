@@ -624,6 +624,16 @@ describe("cancelEvent", () => {
     });
   });
 
+  it("pending (never-invited) event → deleted with sendUpdates none, no cancel notice", async () => {
+    const id = await booked();
+    const ev = cal.events.get(id)!;
+    ev.extendedProperties!.private!.mshindiInvite = "pending";
+    await svc().cancelEvent(ids(id));
+    expect(ops()).toEqual(["get:", "delete:none"]);
+    expect(kinds("cancel")).toHaveLength(0);
+    expect(cal.events.get(id)!.status).toBe("cancelled");
+  });
+
   it("passes the caller's sendUpdates", async () => {
     const id = await booked();
     await svc().cancelEvent({ ...ids(id), sendUpdates: "none" });

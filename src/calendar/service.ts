@@ -988,7 +988,13 @@ export function createCalendar(
           try {
             await retry(async () => {
               try {
-                await transport.delete({ accessToken, eventId, sendUpdates });
+                await transport.delete({
+                  accessToken,
+                  eventId,
+                  // Guests of a pending event were never invited (D§5.3.1).
+                  sendUpdates:
+                    inviteState(current) === "pending" ? "none" : sendUpdates,
+                });
               } catch (err) {
                 const status = readStatus(asErr(err));
                 if (
