@@ -4,6 +4,7 @@ import { internals } from "../core/create-google.js";
 import {
   ConferencingUnavailableError,
   ConnectionRevokedError,
+  EventCancelledError,
   EventConflictError,
   EventNotFoundError,
   GoogleApiError,
@@ -35,15 +36,21 @@ import type {
   SendUpdates,
   TimeRange,
 } from "./types.js";
-import { validateAvailabilityInput, validateCreateInput } from "./validate.js";
+import {
+  validateAvailabilityInput,
+  validateChanges,
+  validateCreateInput,
+} from "./validate.js";
 import type {
   AvailabilityInput,
+  CancelEventInput,
   CreateEventInput,
   GetEventInput,
   NormalizedEvent,
   SuggestSlotsInput,
+  UpdateEventInput,
 } from "./validate.js";
-import { assertManaged, toView } from "./view.js";
+import { assertManaged, toNormalized, toView } from "./view.js";
 
 export type CalendarOptions = {
   transport?: CalendarTransport;
@@ -60,6 +67,8 @@ export type CalendarApi = {
   createEvent(
     input: CreateEventInput,
   ): Promise<CalendarEventView & { created: boolean }>;
+  updateEvent(input: UpdateEventInput): Promise<CalendarEventView>;
+  cancelEvent(input: CancelEventInput): Promise<void>;
 };
 
 const GOOGLE_SEND_UPDATES: Record<SendUpdates, GoogleSendUpdates> = {
@@ -71,6 +80,8 @@ const GOOGLE_SEND_UPDATES: Record<SendUpdates, GoogleSendUpdates> = {
 /** D§5.3.1 step 2: total ~10 s of polling for a `pending` conference. */
 const CONFERENCE_POLL_MS = [500, 1000, 2000, 3000, 3500] as const;
 const RELEASE_ATTEMPTS = 3;
+const PATCH_ATTEMPTS = 3;
+const MAX_EVENT_MS = 24 * 3_600_000;
 const BACKOFF_BASE_MS = 250;
 const BACKOFF_CAP_MS = 8000;
 
@@ -89,6 +100,144 @@ const meetReady = (e: GEvent): boolean =>
 
 const inviteState = (e: GEvent): string | undefined =>
   e.extendedProperties?.private?.mshindiInvite;
+
+const storedFingerprint = (e: GEvent): string | undefined =>
+  e.extendedProperties?.private?.mshindiFingerprint;
+
+/** Throws before any token fetch, so bad input emits nothing (as createEvent). */
+function requireIds(
+  input: Record<string, unknown> | undefined,
+  fields: readonly string[],
+): void {
+  for (const field of fields) {
+    const v = input?.[field];
+    if (typeof v !== "string" || v === "") throw new InvalidEventError(field);
+  }
+}
+
+function parseSendUpdates(v: unknown): GoogleSendUpdates {
+  if (v === undefined) return "all";
+  if (
+    typeof v !== "string" ||
+    !Object.prototype.hasOwnProperty.call(GOOGLE_SEND_UPDATES, v)
+  ) {
+    throw new InvalidEventError("sendUpdates");
+  }
+  return GOOGLE_SEND_UPDATES[v as SendUpdates];
+}
+
+type Attendee = NormalizedEvent["attendees"][number];
+const attendeeKey = (as: Attendee[]): string =>
+  JSON.stringify(
+    as
+      .map((a) => [a.email.toLowerCase(), a.optional, a.displayName] as const)
+      .sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0)),
+  );
+
+const SAME: {
+  [K in keyof NormalizedEvent]: (
+    a: NormalizedEvent[K],
+    b: NormalizedEvent[K],
+  ) => boolean;
+} = {
+  title: (a, b) => a === b,
+  description: (a, b) => a === b,
+  start: (a, b) => a.getTime() === b.getTime(),
+  end: (a, b) => a.getTime() === b.getTime(),
+  timeZone: (a, b) => a === b,
+  attendees: (a, b) => attendeeKey(a) === attendeeKey(b),
+  meeting: (a, b) =>
+    a.type === b.type &&
+    (a.type !== "in_person" ||
+      a.location === (b as { location: string }).location),
+  guestsCanSeeOtherGuests: (a, b) => a === b,
+};
+
+/** Sorted keys of `changes` whose value differs from `current`. */
+function changedKeys(
+  current: NormalizedEvent,
+  changes: Partial<NormalizedEvent>,
+): (keyof NormalizedEvent)[] {
+  return (Object.keys(changes) as (keyof NormalizedEvent)[])
+    .filter(
+      (k) =>
+        !(SAME[k] as (a: unknown, b: unknown) => boolean)(
+          current[k],
+          changes[k],
+        ),
+    )
+    .sort();
+}
+
+/**
+ * D§5.4: only the changed Google fields plus the new fingerprint. Attendees are
+ * the full desired list; kept guests carry their current RSVP, the organizer's
+ * own entry is preserved.
+ */
+function updatePatch(
+  current: GEvent,
+  next: NormalizedEvent,
+  changed: (keyof NormalizedEvent)[],
+  fp: string,
+): { patch: Partial<GEvent>; conferenceDataVersion: 0 | 1 } {
+  const p: Record<string, unknown> = {};
+  const has = (k: keyof NormalizedEvent) => changed.includes(k);
+  let conferenceDataVersion: 0 | 1 = 0;
+  if (has("title")) p.summary = next.title;
+  if (has("description")) p.description = next.description;
+  if (has("start") || has("end") || has("timeZone")) {
+    p.start = { dateTime: next.start.toISOString(), timeZone: next.timeZone };
+    p.end = { dateTime: next.end.toISOString(), timeZone: next.timeZone };
+  }
+  if (has("attendees")) {
+    const all = current.attendees ?? [];
+    const rsvp = new Map(
+      all.flatMap((a) =>
+        a.email && a.responseStatus
+          ? [[a.email.toLowerCase(), a.responseStatus] as const]
+          : [],
+      ),
+    );
+    p.attendees = [
+      ...all.filter((a) => a.organizer === true || a.self === true),
+      ...next.attendees.map((a) => {
+        const status = rsvp.get(a.email.toLowerCase());
+        return {
+          email: a.email,
+          ...(a.displayName !== null && { displayName: a.displayName }),
+          optional: a.optional,
+          ...(status !== undefined && { responseStatus: status }),
+        };
+      }),
+    ];
+  }
+  if (has("meeting")) {
+    const wasMeet = toNormalized(current).meeting.type === "google_meet";
+    if (next.meeting.type === "google_meet") {
+      if (!wasMeet) {
+        p.conferenceData = {
+          createRequest: {
+            requestId: randomUUID(),
+            conferenceSolutionKey: { type: "hangoutsMeet" },
+          },
+        };
+        p.location = null;
+        conferenceDataVersion = 1;
+      }
+    } else {
+      p.location = next.meeting.location;
+      if (wasMeet) {
+        p.conferenceData = null;
+        conferenceDataVersion = 1;
+      }
+    }
+  }
+  if (has("guestsCanSeeOtherGuests")) {
+    p.guestsCanSeeOtherGuests = next.guestsCanSeeOtherGuests;
+  }
+  p.extendedProperties = { private: { mshindiFingerprint: fp } };
+  return { patch: p as Partial<GEvent>, conferenceDataVersion };
+}
 
 function eventBody(
   id: string,
@@ -131,7 +280,7 @@ function eventBody(
   };
 }
 
-/** I1: only sanitized GoogleLibErrors leave createEvent. */
+/** I1: only sanitized GoogleLibErrors leave the calendar service. */
 function sanitize(err: unknown): GoogleLibError {
   if (err instanceof GoogleLibError) return err;
   if (err instanceof EventGoneSignal) return new EventNotFoundError();
@@ -245,6 +394,45 @@ export function createCalendar(
       }
     }
     return result;
+  }
+
+  const warn = (message: string): void => {
+    try {
+      google[internals].logger?.warn(message);
+    } catch {
+      // logging must never break the caller
+    }
+  };
+
+  const getManaged = async (
+    accessToken: string,
+    eventId: string,
+    tenantId: string,
+  ): Promise<GEvent> => {
+    let e: GEvent;
+    try {
+      e = await retry(() => transport.get({ accessToken, eventId }));
+    } catch (err) {
+      if (err instanceof EventGoneSignal) throw new EventNotFoundError();
+      throw err;
+    }
+    assertManaged(e, tenantId);
+    return e;
+  };
+
+  /** D§5.3.1 step 2: poll a `pending` conference for up to ~10 s. */
+  async function pollConference(
+    accessToken: string,
+    eventId: string,
+    from: GEvent,
+  ): Promise<GEvent> {
+    let event = from;
+    for (const ms of CONFERENCE_POLL_MS) {
+      if (meetReady(event) || conferenceStatus(event) !== "pending") break;
+      await sleep(ms);
+      event = await retry(() => transport.get({ accessToken, eventId }));
+    }
+    return event;
   }
 
   async function getAvailability(input: AvailabilityInput) {
@@ -464,12 +652,7 @@ export function createCalendar(
       inserted: GEvent,
     ): Promise<{ event: GEvent; releasedElsewhere: boolean }> {
       const getEv = () => retry(() => transport.get({ accessToken, eventId }));
-      let event = inserted;
-      for (const ms of CONFERENCE_POLL_MS) {
-        if (meetReady(event) || conferenceStatus(event) !== "pending") break;
-        await sleep(ms);
-        event = await getEv();
-      }
+      let event = await pollConference(accessToken, eventId, inserted);
       if (meetReady(event)) return { event, releasedElsewhere: false };
       try {
         for (let attempt = 0; attempt < RELEASE_ATTEMPTS; attempt++) {
@@ -578,9 +761,217 @@ export function createCalendar(
     }
   }
 
+  async function updateEvent(
+    input: UpdateEventInput,
+  ): Promise<CalendarEventView> {
+    requireIds(input as Record<string, unknown> | undefined, [
+      "tenantId",
+      "connectionId",
+      "actorId",
+      "eventId",
+    ]);
+    // Fail fast on bad input; re-validated against the real organizer below.
+    validateChanges(input.changes, "");
+    const sendUpdates = parseSendUpdates(input.sendUpdates);
+    const { tenantId, connectionId, actorId, eventId } = input;
+    const { emit, now } = google[internals];
+
+    // Call-scoped: if a 401 re-run finds our own patch already applied, it is
+    // still our update (one updated event, with the first attempt's `changed`).
+    let attempted: { fp: string; changed: string[] } | null = null;
+
+    try {
+      const out = await withToken(
+        tenantId,
+        connectionId,
+        async (accessToken, connection) => {
+          const changes = validateChanges(input.changes, connection.email);
+          const current = await getManaged(accessToken, eventId, tenantId);
+          if (current.status === "cancelled") throw new EventCancelledError();
+
+          const before = toNormalized(current);
+          const next: NormalizedEvent = { ...before, ...changes };
+          const span = next.end.getTime() - next.start.getTime();
+          if (span <= 0 || span > MAX_EVENT_MS)
+            throw new InvalidEventError("end");
+          const fp = fingerprint(next);
+          const changed = changedKeys(before, changes);
+
+          if (fp === storedFingerprint(current) || changed.length === 0) {
+            if (attempted?.fp === fp) {
+              return { event: current, next, changed: attempted.changed };
+            }
+            return { event: current, next, changed: null };
+          }
+
+          const body = updatePatch(current, next, changed, fp);
+          attempted = { fp, changed };
+          let event = await patchVerified(accessToken, body, fp);
+          if (
+            next.meeting.type === "google_meet" &&
+            before.meeting.type !== "google_meet"
+          ) {
+            event = await pollConference(accessToken, eventId, event);
+            if (!meetReady(event)) {
+              // Guests were already notified by the patch; a link-less Meet event
+              // is better than a second round of notifications from a rollback.
+              warn(
+                "google calendar: Meet link could not be created while updating an event",
+              );
+            }
+          }
+          return { event, next, changed };
+        },
+      );
+
+      if (out.changed !== null) {
+        await emit({
+          type: "calendar_event.updated",
+          tenantId,
+          actorId,
+          connectionId,
+          eventId,
+          attendees: out.next.attendees.map((a) => a.email),
+          title: out.next.title,
+          start: out.next.start,
+          end: out.next.end,
+          changed: out.changed,
+          at: now(),
+        });
+      }
+      return toView(out.event);
+    } catch (err) {
+      throw await failed(err, "update", { tenantId, actorId, connectionId });
+    }
+
+    /**
+     * No `If-Match` (D§5.4: RSVPs change the etag). Verify-then-retry: after a
+     * retryable failure, a `get` showing our fingerprint means it landed.
+     */
+    async function patchVerified(
+      accessToken: string,
+      body: ReturnType<typeof updatePatch>,
+      fp: string,
+    ): Promise<GEvent> {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await transport.patch({
+            accessToken,
+            eventId,
+            patch: body.patch,
+            sendUpdates,
+            conferenceDataVersion: body.conferenceDataVersion,
+          });
+        } catch (err) {
+          const c = classifyCalendarError(err);
+          if (c.kind !== "retry") return rethrow(err);
+          const current = await getManaged(accessToken, eventId, tenantId);
+          if (storedFingerprint(current) === fp) return current;
+          if (current.status === "cancelled") throw new EventCancelledError();
+          const tooLong = c.delayMs !== null && c.delayMs > BACKOFF_CAP_MS;
+          if (attempt + 1 >= PATCH_ATTEMPTS || tooLong) return rethrow(err);
+          await sleep(
+            c.delayMs ??
+              random() *
+                Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt),
+          );
+        }
+      }
+    }
+  }
+
+  async function cancelEvent(input: CancelEventInput): Promise<void> {
+    requireIds(input as Record<string, unknown> | undefined, [
+      "tenantId",
+      "connectionId",
+      "actorId",
+      "eventId",
+    ]);
+    const sendUpdates = parseSendUpdates(input.sendUpdates);
+    const { tenantId, connectionId, actorId, eventId } = input;
+    const { emit, now } = google[internals];
+
+    // Call-scoped: an ambiguous delete of ours may have landed, so a later
+    // "gone" / "cancelled" (also after a 401 re-run) is our own cancellation.
+    let ownDeleteMayHaveLanded = false;
+
+    try {
+      const cancelled = await withToken(
+        tenantId,
+        connectionId,
+        async (accessToken) => {
+          const current = await getManaged(accessToken, eventId, tenantId);
+          if (current.status === "cancelled") {
+            return ownDeleteMayHaveLanded ? current : null;
+          }
+          try {
+            await retry(async () => {
+              try {
+                await transport.delete({ accessToken, eventId, sendUpdates });
+              } catch (err) {
+                const status = readStatus(asErr(err));
+                if (
+                  classifyCalendarError(err).kind === "retry" &&
+                  status !== 429 &&
+                  status !== 403
+                ) {
+                  ownDeleteMayHaveLanded = true;
+                }
+                throw err;
+              }
+            });
+          } catch (err) {
+            if (!(err instanceof EventGoneSignal)) throw err;
+            // Gone without an ambiguous attempt of ours: cancelled elsewhere.
+            if (!ownDeleteMayHaveLanded) return null;
+          }
+          return current;
+        },
+      );
+
+      if (cancelled !== null) {
+        const ev = toNormalized(cancelled);
+        await emit({
+          type: "calendar_event.cancelled",
+          tenantId,
+          actorId,
+          connectionId,
+          eventId,
+          attendees: ev.attendees.map((a) => a.email),
+          title: ev.title,
+          start: ev.start,
+          end: ev.end,
+          at: now(),
+        });
+      }
+    } catch (err) {
+      throw await failed(err, "cancel", { tenantId, actorId, connectionId });
+    }
+  }
+
+  /** Emits `calendar_event.failed` (errorCode only) and returns the sanitized error. */
+  async function failed(
+    err: unknown,
+    operation: "update" | "cancel",
+    ids: { tenantId: string; actorId: string; connectionId: string },
+  ): Promise<GoogleLibError> {
+    const safe = sanitize(err);
+    const { emit, now } = google[internals];
+    await emit({
+      type: "calendar_event.failed",
+      ...ids,
+      operation,
+      errorCode: safe.code,
+      at: now(),
+    });
+    return safe;
+  }
+
   return {
     getAvailability,
     createEvent,
+    updateEvent,
+    cancelEvent,
 
     async suggestSlots(input) {
       const { availability, window } = await availabilityOf(input);

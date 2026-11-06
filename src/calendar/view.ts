@@ -1,6 +1,7 @@
 import { EventNotManagedError } from "../core/errors.js";
 import type { GEvent } from "./transport.js";
 import type { AttendeeResponse, CalendarEventView } from "./types.js";
+import type { NormalizedEvent } from "./validate.js";
 
 const RESPONSES: Record<string, AttendeeResponse> = {
   accepted: "accepted",
@@ -33,6 +34,38 @@ function meetingOf(e: GEvent): CalendarEventView["meeting"] {
   return { type: "in_person", location: e.location ?? "" };
 }
 
+/** Guests as the library manages them: the organizer's own entry is not a guest. */
+const guestsOf = (e: GEvent) =>
+  (e.attendees ?? []).filter(
+    (a): a is typeof a & { email: string } =>
+      a.organizer !== true && a.self !== true && !!a.email,
+  );
+
+/**
+ * The event as `validateCreateInput` would have produced it, so changes can be
+ * merged onto it and fingerprinted (D§5.4).
+ */
+export function toNormalized(e: GEvent): NormalizedEvent {
+  const m = meetingOf(e);
+  return {
+    title: e.summary ?? "",
+    description: e.description ?? null,
+    start: new Date(e.start?.dateTime ?? ""),
+    end: new Date(e.end?.dateTime ?? ""),
+    timeZone: e.start?.timeZone ?? e.end?.timeZone ?? "UTC",
+    attendees: guestsOf(e).map((a) => ({
+      email: a.email,
+      displayName: a.displayName ?? null,
+      optional: a.optional ?? false,
+    })),
+    meeting:
+      m.type === "google_meet"
+        ? { type: "google_meet" }
+        : { type: "in_person", location: m.location },
+    guestsCanSeeOtherGuests: e.guestsCanSeeOtherGuests ?? false,
+  };
+}
+
 export function toView(e: GEvent): CalendarEventView {
   const status = STATUSES.find((s) => s === e.status) ?? "confirmed";
   return {
@@ -44,14 +77,12 @@ export function toView(e: GEvent): CalendarEventView {
     timeZone: e.start?.timeZone ?? e.end?.timeZone ?? "UTC",
     meeting: meetingOf(e),
     guestsCanSeeOtherGuests: e.guestsCanSeeOtherGuests ?? false,
-    attendees: (e.attendees ?? [])
-      .filter((a) => a.organizer !== true && a.self !== true && a.email)
-      .map((a) => ({
-        email: a.email as string,
-        displayName: a.displayName ?? null,
-        optional: a.optional ?? false,
-        response: RESPONSES[a.responseStatus ?? ""] ?? "needs_action",
-      })),
+    attendees: guestsOf(e).map((a) => ({
+      email: a.email,
+      displayName: a.displayName ?? null,
+      optional: a.optional ?? false,
+      response: RESPONSES[a.responseStatus ?? ""] ?? "needs_action",
+    })),
     htmlLink: e.htmlLink ?? "",
     updatedAt: new Date(e.updated ?? 0),
   };
