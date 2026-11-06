@@ -189,7 +189,7 @@ export class FakeCalendar implements CalendarTransport {
         const flipped =
           before.extendedProperties?.private?.mshindiInvite === "pending" &&
           ev.extendedProperties?.private?.mshindiInvite === "sent";
-        if (flipped) this.notify(ev, "invite", "all");
+        if (flipped) this.notify(ev, "invite", p.sendUpdates);
         else if (changed) this.notify(ev, "update", p.sendUpdates);
       }
       return clone(ev);

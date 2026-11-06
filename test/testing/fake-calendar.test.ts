@@ -183,6 +183,21 @@ describe("FakeCalendar", () => {
     ]);
   });
 
+  it("invite release honours externalOnly", async () => {
+    const f = new FakeCalendar({ organizerEmail: "me@example.com" });
+    await ins(f, ev(), "none");
+    await f.patch({
+      accessToken: T,
+      eventId: "evt1",
+      patch: { extendedProperties: { private: { mshindiInvite: "sent" } } },
+      sendUpdates: "externalOnly",
+      conferenceDataVersion: 0,
+    });
+    expect(f.notifications).toEqual([
+      { eventId: "evt1", kind: "invite", to: ["b@other.org"] },
+    ]);
+  });
+
   it("delete emits cancel unless none", async () => {
     const f = new FakeCalendar();
     await ins(f, ev(), "none");
