@@ -32,6 +32,16 @@
         "default": "./dist/gmail.cjs"
       }
     },
+    "./calendar": {
+      "import": {
+        "types": "./dist/calendar.d.ts",
+        "default": "./dist/calendar.js"
+      },
+      "require": {
+        "types": "./dist/calendar.d.cts",
+        "default": "./dist/calendar.cjs"
+      }
+    },
     "./postgres": {
       "import": {
         "types": "./dist/postgres.d.ts",
