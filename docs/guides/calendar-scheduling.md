@@ -11,11 +11,12 @@ tenant's event) fails with `event_not_managed`.
 ## 1. Set up
 
 **Install the peer.** `@googleapis/calendar` is an optional peer, loaded on first use.
-The supported range is `>=14.0.0 <21.0.0`. v19 and v20 need Node 22; the library is
-tested against v16 on Node 18.
+The supported range is `>=14.0.0 <21.0.0`. v19 and v20 need Node 22, so on Node 18 or 20
+pin v16 (the version the library is tested against):
 
 ```sh
-npm i @googleapis/calendar
+npm i @googleapis/calendar@^16   # Node 18 / 20
+npm i @googleapis/calendar       # Node 22+
 ```
 
 **Tenant admin.** In the Google Cloud project, enable the **Google Calendar API** (see
@@ -82,7 +83,8 @@ const { slots, unknownAttendees } = await calendar.suggestSlots({
 Optional knobs: `bufferMinutes` (0 to 240), `stepMinutes` (5 to 60, default 15),
 `minNoticeMinutes` (default 60), `maxResults` (1 to 50, default 10) and
 `workingHoursByAttendee`. The window may be at most 31 days. `getAvailability` returns
-the raw busy blocks per person if you want to draw your own picker.
+the raw busy blocks per person if you want to draw your own picker. Its result is keyed
+by the **fully lowercased** address, so look people up with `email.toLowerCase()`.
 
 If anyone's availability is `unknown`, `suggestSlots` returns **no suggestions** and
 lists them in `unknownAttendees`. It will not offer a time it cannot verify. See
@@ -125,6 +127,9 @@ retry after a timeout, a crash or a double-click, even from two servers at once.
 - **Re-booking a cancelled interview needs a new key.** A cancelled event still owns its
   key; reusing it throws `event_conflict`. Mint a fresh key (for example
   `${interview.id}:2`) for the new booking.
+- Retrying the **original** `createEvent` after the event was rescheduled also throws
+  `event_conflict` (its details no longer match). Treat it as "already booked" and read
+  the event with `getEvent`.
 
 **Google Meet.** For `google_meet`, the event is created without notifying anyone. The
 library waits (up to about 10 seconds) for Google to finish making the link, and only
@@ -135,6 +140,11 @@ If Google cannot create the conference, the event is withdrawn silently (nobody 
 emailed) and the call throws `ConferencingUnavailableError`
 (`conferencing_unavailable`). Retry with a **new** idempotency key, or fall back to an
 in-person or phone interview.
+
+If that withdrawal itself fails (the cleanup delete errors too), the error is still
+`ConferencingUnavailableError` and a warning is logged, but a pending event may remain on
+the organizer's calendar. Its guests were never invited. Replaying the call with the
+**same** key retries the withdrawal.
 
 If a Meet create was interrupted half way and you replay it, the replaying call finishes
 the job and its `sendUpdates` decides who is notified.
@@ -255,7 +265,33 @@ of what was booked; store the `eventId` yourself.
 Plus the usual `missing_scope`, `connection_revoked`, `rate_limited` and `google_api`.
 Match on `err.code`.
 
-## 7. Before production: live checks
+## 7. Testing your integration
+
+`FakeCalendar` from `@mshindi-labs/google/testing` is an in-memory Calendar transport.
+Pass it to `createCalendar` so tests never call Google:
+
+```ts
+import { createCalendar } from "@mshindi-labs/google/calendar";
+import { FakeCalendar } from "@mshindi-labs/google/testing";
+
+const cal = new FakeCalendar({ organizerEmail: "careers@example.com" });
+cal.setFreeBusy("panelist1@example.com", [
+  { start: "2026-12-01T09:00:00Z", end: "2026-12-01T10:00:00Z" },
+]);
+const calendar = createCalendar(google, { transport: cal });
+
+const event = await calendar.createEvent({ ...booking });
+expect(cal.notifications.filter((n) => n.kind === "invite")).toHaveLength(1);
+```
+
+`google` is a `createGoogle` instance with a connected mailbox (in tests, use
+`InMemoryStore`, `LocalKeyProvider` and `FakeGoogleOAuth` from the same entry point).
+`cal.events`, `cal.calls` and `cal.notifications` show what happened.
+`setConferenceBehaviour("pending" | "failure")` simulates a slow or failing Meet link, and
+`failNext(op, error, { afterApply })` injects a failure, optionally after the change was
+applied (a lost response).
+
+## 8. Before production: live checks
 
 The library was built against Google's documented behavior and tested with a fake
 transport. These behaviors could not be confirmed offline. Run each check once against a
@@ -280,8 +316,9 @@ on the feature. Where Google behaves differently there is a fallback.
 5. **Invitations really go out on release.** Create a Meet event and confirm each guest
    receives exactly one invitation, and only after the link exists. The library inserts
    with no notification and then patches with `sendUpdates=all`; verify that patch emails
-   every attendee. _Fallback:_ if it does not, notify guests yourself after `createEvent`
-   returns, or use in-person events (which notify on insert).
+   every attendee. _Fallback_ (design §5.3.1): insert the Meet event **without**
+   attendees in phase 1, then patch the attendee list in with the caller's `sendUpdates`
+   when releasing (Google notifies attendees added by a patch).
 6. **Private markers merge.** After an update, confirm the tenant, key and invite
    markers are all still present (`events.patch` must merge the private properties
    key by key, not replace them). If they are replaced, `event_not_managed` appears
