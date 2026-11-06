@@ -3,6 +3,7 @@ import {
   ConnectionRevokedError,
   EventNotFoundError,
   EventNotManagedError,
+  GoogleLibError,
   InvalidEventError,
   MissingScopeError,
 } from "../../src/core/errors.js";
@@ -175,6 +176,60 @@ describe("suggestSlots", () => {
       workingHours: wh,
     });
     expect(r).toEqual({ slots: [], unknownAttendees: ["bob@example.com"] });
+  });
+
+  it.each([
+    ["durationMinutes", { durationMinutes: 0 }],
+    ["stepMinutes", { stepMinutes: 7.5 }],
+    ["bufferMinutes", { bufferMinutes: -1 }],
+    ["minNoticeMinutes", { minNoticeMinutes: 99999 }],
+    ["maxResults", { maxResults: 0 }],
+    [
+      "workingHours.timeZone",
+      { workingHours: { ...wh, timeZone: "Mars/Base" } },
+    ],
+  ])(
+    "invalid %s → InvalidEventError before any transport call",
+    async (field, over) => {
+      await expect(
+        svc().suggestSlots({
+          ...base(),
+          durationMinutes: 30,
+          workingHours: wh,
+          ...over,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_event", field });
+      expect(cal.calls).toHaveLength(0);
+    },
+  );
+
+  it("invalid durationMinutes with an unknown attendee → still InvalidEventError, no call", async () => {
+    cal.setFreeBusy("bob@example.com", { error: "notFound" });
+    await expect(
+      svc().suggestSlots({ ...base(), durationMinutes: 1, workingHours: wh }),
+    ).rejects.toBeInstanceOf(InvalidEventError);
+    expect(cal.calls).toHaveLength(0);
+  });
+
+  it("freeBusy 404 → a sanitized GoogleLibError with a code", async () => {
+    const notFound = Object.assign(new Error("Not Found"), {
+      code: 404,
+      response: {
+        status: 404,
+        data: { error: { code: 404, errors: [{ reason: "notFound" }] } },
+      },
+    });
+    cal.failNext("freeBusy", notFound);
+    const err = await svc()
+      .getAvailability(base())
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GoogleLibError);
+    expect(typeof (err as GoogleLibError).code).toBe("string");
+    cal.failNext("freeBusy", notFound);
+    const err2 = await svc()
+      .suggestSlots({ ...base(), durationMinutes: 30, workingHours: wh })
+      .catch((e: unknown) => e);
+    expect(err2).toBeInstanceOf(GoogleLibError);
   });
 
   it("returns slots avoiding busy time", async () => {

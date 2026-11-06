@@ -23,7 +23,7 @@ import {
   PreconditionFailedSignal,
   withCalendarRetry,
 } from "./retry.js";
-import { findCommonSlots } from "./slots.js";
+import { findCommonSlots, parseSlotParams } from "./slots.js";
 import { createCalendarApiTransport } from "./transport.js";
 import type {
   CalendarTransport,
@@ -481,16 +481,22 @@ export function createCalendar(
   async function availabilityOf(input: AvailabilityInput) {
     const { attendees, window } = validateAvailabilityInput(input);
     const { tenantId, connectionId } = input;
-    const raw = await withToken(tenantId, connectionId, (accessToken) =>
-      retry(() =>
-        transport.freeBusy({
-          accessToken,
-          timeMin: window.start.toISOString(),
-          timeMax: window.end.toISOString(),
-          emails: attendees,
-        }),
-      ),
-    );
+    let raw: Awaited<ReturnType<CalendarTransport["freeBusy"]>>;
+    try {
+      raw = await withToken(tenantId, connectionId, (accessToken) =>
+        retry(() =>
+          transport.freeBusy({
+            accessToken,
+            timeMin: window.start.toISOString(),
+            timeMax: window.end.toISOString(),
+            emails: attendees,
+          }),
+        ),
+      );
+    } catch (err) {
+      // I1: internal signals (e.g. EventGoneSignal on a 404) never leave.
+      throw sanitize(err);
+    }
     const byLower = new Map(
       Object.entries(raw).map(([k, v]) => [k.toLowerCase(), v]),
     );
@@ -1038,6 +1044,10 @@ export function createCalendar(
     cancelEvent,
 
     async suggestSlots(input) {
+      // Fail fast (no token fetch, no Google call) on bad slot parameters,
+      // also when an attendee would turn out unknown.
+      validateAvailabilityInput(input);
+      parseSlotParams(input);
       const { availability, window } = await availabilityOf(input);
       const unknownAttendees = Object.entries(availability)
         .filter(([, v]) => v.status === "unknown")
@@ -1077,18 +1087,14 @@ export function createCalendar(
         }
       }
       const { tenantId, connectionId, eventId } = input;
-      const ev = await withToken(
-        tenantId,
-        connectionId,
-        async (accessToken) => {
-          try {
-            return await retry(() => transport.get({ accessToken, eventId }));
-          } catch (err) {
-            if (err instanceof EventGoneSignal) throw new EventNotFoundError();
-            throw err;
-          }
-        },
-      );
+      let ev: GEvent;
+      try {
+        ev = await withToken(tenantId, connectionId, (accessToken) =>
+          retry(() => transport.get({ accessToken, eventId })),
+        );
+      } catch (err) {
+        throw sanitize(err); // EventGoneSignal → EventNotFoundError
+      }
       assertManaged(ev, tenantId);
       return toView(ev);
     },

@@ -231,6 +231,65 @@ function dayCandidates(
   return out;
 }
 
+export type SlotParams = Pick<
+  FindCommonSlotsInput,
+  | "durationMinutes"
+  | "workingHours"
+  | "workingHoursByAttendee"
+  | "bufferMinutes"
+  | "stepMinutes"
+  | "minNoticeMinutes"
+  | "maxResults"
+>;
+
+/**
+ * Validates the slot parameters (everything but `now`, `window` and `busy`) and
+ * applies defaults. Throws InvalidEventError; pure, so callers can run it before
+ * any Google call.
+ */
+export function parseSlotParams(input: SlotParams) {
+  const durationMinutes = intIn(
+    input.durationMinutes,
+    5,
+    480,
+    "durationMinutes",
+  );
+  const stepMinutes = intIn(input.stepMinutes ?? 15, 5, 60, "stepMinutes");
+  const bufferMinutes = intIn(
+    input.bufferMinutes ?? 0,
+    0,
+    240,
+    "bufferMinutes",
+  );
+  const minNoticeMinutes = intIn(
+    input.minNoticeMinutes ?? 60,
+    0,
+    10080,
+    "minNoticeMinutes",
+  );
+  const maxResults = intIn(input.maxResults ?? 10, 1, 50, "maxResults");
+  const tenant = parseHours(input.workingHours, "workingHours");
+  const overrides = new Map<string, Hours>();
+  const byAttendee = input.workingHoursByAttendee ?? {};
+  if (typeof byAttendee !== "object" || byAttendee === null)
+    throw new InvalidEventError("workingHoursByAttendee");
+  for (const [email, wh] of Object.entries(byAttendee)) {
+    overrides.set(
+      email.toLowerCase(),
+      parseHours(wh, `workingHoursByAttendee.${email}`),
+    );
+  }
+  return {
+    durationMinutes,
+    stepMinutes,
+    bufferMinutes,
+    minNoticeMinutes,
+    maxResults,
+    tenant,
+    overrides,
+  };
+}
+
 /**
  * Common free slots for every attendee (the keys of `busy`), each inside that attendee's
  * own working hours (`workingHoursByAttendee`, case-insensitive, else `workingHours`) and
@@ -240,16 +299,15 @@ function dayCandidates(
  * Pure: no I/O, `now` is an input.
  */
 export function findCommonSlots(input: FindCommonSlotsInput): TimeRange[] {
-  const duration = intIn(input.durationMinutes, 5, 480, "durationMinutes");
-  const step = intIn(input.stepMinutes ?? 15, 5, 60, "stepMinutes");
-  const buffer = intIn(input.bufferMinutes ?? 0, 0, 240, "bufferMinutes");
-  const notice = intIn(
-    input.minNoticeMinutes ?? 60,
-    0,
-    10080,
-    "minNoticeMinutes",
-  );
-  const maxResults = intIn(input.maxResults ?? 10, 1, 50, "maxResults");
+  const {
+    durationMinutes: duration,
+    stepMinutes: step,
+    bufferMinutes: buffer,
+    minNoticeMinutes: notice,
+    maxResults,
+    tenant,
+    overrides,
+  } = parseSlotParams(input);
   if (!isDate(input.now)) throw new InvalidEventError("now");
   const { window } = input;
   if (
@@ -264,16 +322,6 @@ export function findCommonSlots(input: FindCommonSlotsInput): TimeRange[] {
   const winEnd = window.end.getTime();
   if (winEnd <= winStart || winEnd - winStart > MAX_WINDOW_MS) {
     throw new InvalidEventError("window");
-  }
-  const tenant = parseHours(input.workingHours, "workingHours");
-  const overrides = new Map<string, Hours>();
-  for (const [email, wh] of Object.entries(
-    input.workingHoursByAttendee ?? {},
-  )) {
-    overrides.set(
-      email.toLowerCase(),
-      parseHours(wh, `workingHoursByAttendee.${email}`),
-    );
   }
   if (typeof input.busy !== "object" || input.busy === null)
     throw new InvalidEventError("busy");
