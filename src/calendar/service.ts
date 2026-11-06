@@ -1,25 +1,45 @@
+import { randomUUID } from "node:crypto";
 import type { GoogleCore } from "../core/create-google.js";
 import { internals } from "../core/create-google.js";
 import {
+  ConferencingUnavailableError,
   ConnectionRevokedError,
+  EventConflictError,
   EventNotFoundError,
+  GoogleApiError,
+  GoogleLibError,
   InvalidEventError,
 } from "../core/errors.js";
+import { asErr, readStatus } from "../core/google-http.js";
 import { assertServiceScopes } from "../core/scopes.js";
 import type { ConnectionView } from "../core/types.js";
+import { deriveEventId, fingerprint } from "./ids.js";
 import {
   CalendarUnauthorizedSignal,
+  classifyCalendarError,
+  DuplicateEventSignal,
   EventGoneSignal,
   withCalendarRetry,
 } from "./retry.js";
 import { findCommonSlots } from "./slots.js";
 import { createCalendarApiTransport } from "./transport.js";
-import type { CalendarTransport } from "./transport.js";
-import type { Availability, CalendarEventView, TimeRange } from "./types.js";
-import { validateAvailabilityInput } from "./validate.js";
+import type {
+  CalendarTransport,
+  GEvent,
+  GoogleSendUpdates,
+} from "./transport.js";
+import type {
+  Availability,
+  CalendarEventView,
+  SendUpdates,
+  TimeRange,
+} from "./types.js";
+import { validateAvailabilityInput, validateCreateInput } from "./validate.js";
 import type {
   AvailabilityInput,
+  CreateEventInput,
   GetEventInput,
+  NormalizedEvent,
   SuggestSlotsInput,
 } from "./validate.js";
 import { assertManaged, toView } from "./view.js";
@@ -36,7 +56,87 @@ export type CalendarApi = {
     input: SuggestSlotsInput,
   ): Promise<{ slots: TimeRange[]; unknownAttendees?: string[] }>;
   getEvent(input: GetEventInput): Promise<CalendarEventView>;
+  createEvent(
+    input: CreateEventInput,
+  ): Promise<CalendarEventView & { created: boolean }>;
 };
+
+const GOOGLE_SEND_UPDATES: Record<SendUpdates, GoogleSendUpdates> = {
+  all: "all",
+  external_only: "externalOnly",
+  none: "none",
+};
+
+/** D§5.3.1 step 2: total ~10 s of polling for a `pending` conference. */
+const CONFERENCE_POLL_MS = [500, 1000, 2000, 3000, 3500] as const;
+const RELEASE_ATTEMPTS = 3;
+const BACKOFF_BASE_MS = 250;
+const BACKOFF_CAP_MS = 8000;
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const conferenceStatus = (e: GEvent): string | undefined =>
+  e.conferenceData?.createRequest?.status?.statusCode;
+
+/** A Meet event is only usable once Google reports success AND a video link exists. */
+const meetReady = (e: GEvent): boolean =>
+  conferenceStatus(e) === "success" &&
+  (e.conferenceData?.entryPoints ?? []).some(
+    (p) => p.entryPointType === "video" && typeof p.uri === "string",
+  );
+
+const inviteState = (e: GEvent): string | undefined =>
+  e.extendedProperties?.private?.mshindiInvite;
+
+function eventBody(
+  id: string,
+  ev: NormalizedEvent,
+  stamp: { tenantId: string; key: string; fingerprint: string },
+): GEvent {
+  const meet = ev.meeting.type === "google_meet";
+  return {
+    id,
+    summary: ev.title,
+    ...(ev.description !== null && { description: ev.description }),
+    start: { dateTime: ev.start.toISOString(), timeZone: ev.timeZone },
+    end: { dateTime: ev.end.toISOString(), timeZone: ev.timeZone },
+    attendees: ev.attendees.map((a) => ({
+      email: a.email,
+      ...(a.displayName !== null && { displayName: a.displayName }),
+      optional: a.optional,
+    })),
+    ...(ev.meeting.type === "in_person" && { location: ev.meeting.location }),
+    guestsCanInviteOthers: false,
+    guestsCanModify: false,
+    guestsCanSeeOtherGuests: ev.guestsCanSeeOtherGuests,
+    ...(meet && {
+      conferenceData: {
+        createRequest: {
+          requestId: randomUUID(),
+          conferenceSolutionKey: { type: "hangoutsMeet" },
+        },
+      },
+    }),
+    extendedProperties: {
+      private: {
+        mshindiGoogle: "v1",
+        mshindiTenant: stamp.tenantId,
+        mshindiKey: stamp.key,
+        mshindiFingerprint: stamp.fingerprint,
+        mshindiInvite: meet ? "pending" : "sent",
+      },
+    },
+  };
+}
+
+/** I1: only sanitized GoogleLibErrors leave createEvent. */
+function sanitize(err: unknown): GoogleLibError {
+  if (err instanceof GoogleLibError) return err;
+  if (err instanceof EventGoneSignal) return new EventNotFoundError();
+  if (err instanceof DuplicateEventSignal) return new EventConflictError();
+  return new GoogleApiError(0, null, { cause: err });
+}
 
 type Reason = "not_found" | "no_access" | "error";
 
@@ -77,6 +177,14 @@ export function createCalendar(
   /** Wrap each transport call so 401 surfaces as CalendarUnauthorizedSignal. */
   const retry = <T>(fn: () => Promise<T>): Promise<T> =>
     withCalendarRetry(fn, retryOpts);
+  const sleep = opts.sleep ?? defaultSleep;
+  const random = opts.random ?? Math.random;
+  /** Rejects with exactly the signal / sanitized error withCalendarRetry would give. */
+  const rethrow = (err: unknown): Promise<never> =>
+    withCalendarRetry<never>(() => Promise.reject(err), {
+      ...retryOpts,
+      maxAttempts: 1,
+    });
 
   async function withToken<T>(
     tenantId: string,
@@ -170,8 +278,239 @@ export function createCalendar(
     return { availability: out, window };
   }
 
+  async function createEvent(
+    input: CreateEventInput,
+  ): Promise<CalendarEventView & { created: boolean }> {
+    for (const field of ["tenantId", "connectionId", "actorId"] as const) {
+      if (typeof input?.[field] !== "string" || input[field] === "") {
+        throw new InvalidEventError(field);
+      }
+    }
+    // Fail fast on bad input (no token fetch, no event), as Gmail's send does.
+    // Re-validated below against the real organizer to drop their own address.
+    validateCreateInput(input, "");
+    const { tenantId, connectionId, actorId } = input;
+    const { emit, now, logger } = google[internals];
+
+    // Call-scoped (not per withToken attempt): a 401 re-run must still know
+    // that an insert of ours may already have landed.
+    let ownInsertMayHaveLanded = false;
+    let released = false;
+
+    try {
+      const { event, created, ev } = await withToken(
+        tenantId,
+        connectionId,
+        async (accessToken, connection) => {
+          const ev = validateCreateInput(input, connection.email);
+          const id = deriveEventId(
+            tenantId,
+            connection.email,
+            ev.idempotencyKey,
+          );
+          const fp = fingerprint(ev);
+          const meet = ev.meeting.type === "google_meet";
+          const body = eventBody(id, ev, {
+            tenantId,
+            key: ev.idempotencyKey,
+            fingerprint: fp,
+          });
+          const sendUpdates = GOOGLE_SEND_UPDATES[ev.sendUpdates];
+          const getEv = () =>
+            retry(() => transport.get({ accessToken, eventId: id }));
+
+          // Step 1: insert with the deterministic id (I8).
+          let event: GEvent;
+          let created: boolean;
+          try {
+            event = await retry(async () => {
+              try {
+                const out = await transport.insert({
+                  accessToken,
+                  event: body,
+                  sendUpdates: meet ? "none" : sendUpdates,
+                  conferenceDataVersion: meet ? 1 : 0,
+                });
+                ownInsertMayHaveLanded = true;
+                return out;
+              } catch (err) {
+                // An ambiguous (network / 5xx) failure may have created the event;
+                // a rate-limit rejection never does.
+                const status = readStatus(asErr(err));
+                if (
+                  classifyCalendarError(err).kind === "retry" &&
+                  status !== 429 &&
+                  status !== 403
+                ) {
+                  ownInsertMayHaveLanded = true;
+                }
+                throw err;
+              }
+            });
+            created = true;
+          } catch (err) {
+            if (!(err instanceof DuplicateEventSignal)) throw err;
+            created = ownInsertMayHaveLanded;
+            try {
+              event = await getEv();
+            } catch (err2) {
+              if (err2 instanceof EventGoneSignal) {
+                throw new EventConflictError(
+                  "An event with this idempotency key exists but cannot be read",
+                );
+              }
+              throw err2;
+            }
+            assertReplayable(event, tenantId, ev.idempotencyKey, fp);
+          }
+
+          if (meet && inviteState(event) === "pending") {
+            event = await confirmConference(accessToken, id, event);
+            event = await releaseInvites(accessToken, id, sendUpdates);
+            released = true;
+          } else if (created) {
+            released = true;
+          }
+          return { event, created, ev };
+        },
+      );
+
+      if (released) {
+        await emit({
+          type: "calendar_event.created",
+          tenantId,
+          actorId,
+          connectionId,
+          eventId: event.id,
+          attendees: ev.attendees.map((a) => a.email),
+          title: ev.title,
+          start: ev.start,
+          end: ev.end,
+          at: now(),
+        });
+      }
+      return { ...toView(event), created };
+    } catch (err) {
+      const safe = sanitize(err);
+      await emit({
+        type: "calendar_event.failed",
+        tenantId,
+        actorId,
+        connectionId,
+        operation: "create",
+        errorCode: safe.code,
+        at: now(),
+      });
+      throw safe;
+    }
+
+    function assertReplayable(
+      e: GEvent,
+      tenant: string,
+      key: string,
+      fp: string,
+    ): void {
+      const priv = e.extendedProperties?.private;
+      if (
+        priv?.mshindiGoogle !== "v1" ||
+        priv.mshindiTenant !== tenant ||
+        priv.mshindiKey !== key
+      ) {
+        throw new EventConflictError(
+          "An event with this id exists and is not owned by this idempotency key",
+        );
+      }
+      if (e.status === "cancelled") {
+        throw new EventConflictError(
+          "The event for this idempotency key was cancelled; use a new idempotency key",
+        );
+      }
+      if (priv.mshindiFingerprint !== fp) {
+        throw new EventConflictError(
+          "An event with this idempotency key exists with different details; use updateEvent to change it",
+        );
+      }
+    }
+
+    /** D§5.3.1 step 2: wait for the Meet link; on failure withdraw silently. */
+    async function confirmConference(
+      accessToken: string,
+      eventId: string,
+      inserted: GEvent,
+    ): Promise<GEvent> {
+      let event = inserted;
+      for (const ms of CONFERENCE_POLL_MS) {
+        if (meetReady(event) || conferenceStatus(event) !== "pending") break;
+        await sleep(ms);
+        event = await retry(() => transport.get({ accessToken, eventId }));
+      }
+      if (meetReady(event)) return event;
+      try {
+        await retry(() =>
+          transport.delete({ accessToken, eventId, sendUpdates: "none" }),
+        );
+      } catch {
+        try {
+          logger?.warn(
+            "google calendar: could not withdraw event after Meet creation failed",
+          );
+        } catch {
+          // logging must never break the caller
+        }
+      }
+      throw new ConferencingUnavailableError(
+        "Google Meet link could not be created; the event was withdrawn without " +
+          "notifying guests. Retry with a new idempotency key.",
+        { tenantId, connectionId },
+      );
+    }
+
+    /**
+     * D§5.3.1 step 3, verify-then-retry: a lost response may hide a patch that
+     * already released the invites, so check the stamp before patching again.
+     */
+    async function releaseInvites(
+      accessToken: string,
+      eventId: string,
+      sendUpdates: GoogleSendUpdates,
+    ): Promise<GEvent> {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await transport.patch({
+            accessToken,
+            eventId,
+            patch: {
+              extendedProperties: { private: { mshindiInvite: "sent" } },
+            },
+            sendUpdates,
+            conferenceDataVersion: 1,
+          });
+        } catch (err) {
+          const c = classifyCalendarError(err);
+          if (c.kind !== "retry") return rethrow(err);
+          const current = await retry(() =>
+            transport.get({ accessToken, eventId }),
+          );
+          if (inviteState(current) === "sent") return current;
+          if (
+            attempt + 1 >= RELEASE_ATTEMPTS ||
+            (c.delayMs !== null && c.delayMs > BACKOFF_CAP_MS)
+          ) {
+            return rethrow(err);
+          }
+          await sleep(
+            c.delayMs ??
+              random() *
+                Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt),
+          );
+        }
+      }
+    }
+  }
+
   return {
     getAvailability,
+    createEvent,
 
     async suggestSlots(input) {
       const { availability, window } = await availabilityOf(input);
