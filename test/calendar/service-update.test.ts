@@ -688,3 +688,197 @@ describe("cancelEvent", () => {
     expect(JSON.stringify(events)).not.toContain("ya29");
   });
 });
+
+describe("updateEvent — fix round 1", () => {
+  it("hand-edited time, host asks for the original time → applied: one patch, one update", async () => {
+    const id = await booked();
+    // A recruiter moved the event 09:00 → 10:00 in Google's UI (fingerprint untouched).
+    const stored = cal.events.get(id)!;
+    stored.start = {
+      dateTime: "2030-01-07T10:00:00.000Z",
+      timeZone: "Africa/Nairobi",
+    };
+    stored.end = {
+      dateTime: "2030-01-07T11:00:00.000Z",
+      timeZone: "Africa/Nairobi",
+    };
+    const v = await svc().updateEvent({
+      ...ids(id),
+      changes: {
+        start: D("2030-01-07T09:00:00Z"),
+        end: D("2030-01-07T10:00:00Z"),
+      },
+    });
+    expect(v.start).toEqual(D("2030-01-07T09:00:00Z"));
+    expect(v.end).toEqual(D("2030-01-07T10:00:00Z"));
+    expect(patches()).toHaveLength(1);
+    expect(kinds("update")).toHaveLength(1);
+    expect(ofType("calendar_event.updated")).toEqual([
+      expect.objectContaining({ changed: ["end", "start"] }),
+    ]);
+    const after = cal.events.get(id)!;
+    expect(after.extendedProperties?.private?.mshindiFingerprint).toBe(
+      fingerprint(toNormalized(after)),
+    );
+  });
+
+  it("displayName-only change → patch applied", async () => {
+    const id = await booked();
+    const v = await svc().updateEvent({
+      ...ids(id),
+      changes: {
+        attendees: [
+          { email: "jane@applicant.com", displayName: "Jane A. Doe" },
+          { email: "panel@sunculture.io", optional: true },
+        ],
+      },
+    });
+    expect(patches()).toHaveLength(1);
+    expect(v.attendees[0]?.displayName).toBe("Jane A. Doe");
+    expect(ofType("calendar_event.updated")).toEqual([
+      expect.objectContaining({ changed: ["attendees"] }),
+    ]);
+  });
+
+  it("guests listed without displayName keep the one Google has (no change)", async () => {
+    const id = await booked();
+    await svc().updateEvent({
+      ...ids(id),
+      changes: {
+        attendees: [
+          { email: "jane@applicant.com" },
+          { email: "panel@sunculture.io", optional: true },
+        ],
+      },
+    });
+    expect(patches()).toHaveLength(0);
+    expect(cal.events.get(id)!.attendees![0]!.displayName).toBe("Jane Doe");
+  });
+
+  it("lost response on an attendee change → verified by values, one notification", async () => {
+    const id = await booked();
+    cal.failNext("patch", net("ECONNRESET"), { afterApply: true });
+    await svc().updateEvent({
+      ...ids(id),
+      changes: { attendees: [{ email: "new@applicant.com" }] },
+    });
+    expect(ops()).toEqual(["get:", "patch:all", "get:"]);
+    expect(kinds("update")).toHaveLength(1);
+    expect(ofType("calendar_event.updated")).toHaveLength(1);
+  });
+
+  it("kept guests keep Google's other attendee fields", async () => {
+    const id = await booked();
+    const jane = cal.events.get(id)!.attendees![0]! as Record<string, unknown>;
+    jane.comment = "Running 5 min late";
+    jane.additionalGuests = 1;
+    jane.responseStatus = "tentative";
+    await svc().updateEvent({
+      ...ids(id),
+      changes: {
+        attendees: [
+          { email: "jane@applicant.com", optional: true },
+          { email: "new@applicant.com" },
+        ],
+      },
+    });
+    expect(cal.events.get(id)!.attendees![0]).toEqual({
+      email: "jane@applicant.com",
+      displayName: "Jane Doe",
+      optional: true,
+      responseStatus: "tentative",
+      comment: "Running 5 min late",
+      additionalGuests: 1,
+    });
+  });
+
+  it("google_meet again after a failed conference → fresh requestId, meetUrl set", async () => {
+    const id = await booked();
+    cal.setConferenceBehaviour("failure");
+    const broken = await svc().updateEvent({
+      ...ids(id),
+      changes: { meeting: { type: "google_meet" } },
+    });
+    expect(broken.meeting).toEqual({ type: "google_meet", meetUrl: null });
+    const firstReq =
+      cal.events.get(id)!.conferenceData?.createRequest?.requestId;
+    events.length = 0;
+
+    cal.setConferenceBehaviour("success");
+    const fixed = await svc().updateEvent({
+      ...ids(id),
+      changes: { meeting: { type: "google_meet" } },
+    });
+    const secondReq =
+      cal.events.get(id)!.conferenceData?.createRequest?.requestId;
+    expect(secondReq).toBeDefined();
+    expect(secondReq).not.toBe(firstReq);
+    expect((fixed.meeting as { meetUrl: string | null }).meetUrl).toMatch(
+      /^https:\/\/meet\.google\.com\//,
+    );
+    expect(ofType("calendar_event.updated")).toEqual([
+      expect.objectContaining({ changed: ["meeting"] }),
+    ]);
+  });
+
+  it("google_meet on a Meet event with a working link stays a no-op", async () => {
+    const id = await booked({ meeting: { type: "google_meet" } });
+    await svc().updateEvent({
+      ...ids(id),
+      changes: { meeting: { type: "google_meet" } },
+    });
+    expect(patches()).toHaveLength(0);
+    expect(events).toHaveLength(0);
+  });
+
+  it("conference poll failing after the patch landed → success, warning, updated emitted", async () => {
+    const id = await booked();
+    cal.setConferenceBehaviour("pending", 5);
+    let patched = false;
+    const transport = {
+      freeBusy: cal.freeBusy.bind(cal),
+      insert: cal.insert.bind(cal),
+      delete: cal.delete.bind(cal),
+      patch: async (p: Parameters<FakeCalendar["patch"]>[0]) => {
+        const r = await cal.patch(p);
+        patched = true;
+        return r;
+      },
+      get: (p: Parameters<FakeCalendar["get"]>[0]) =>
+        patched ? Promise.reject(net("ECONNRESET")) : cal.get(p),
+    };
+    const v = await createCalendar(g, {
+      transport,
+      sleep: async () => {},
+      random: () => 0,
+    }).updateEvent({
+      ...ids(id),
+      changes: { meeting: { type: "google_meet" } },
+    });
+    expect(v.meeting).toEqual({ type: "google_meet", meetUrl: null });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).not.toContain(id);
+    expect(kinds("update")).toHaveLength(1);
+    expect(ofType("calendar_event.updated")).toHaveLength(1);
+    expect(ofType("calendar_event.failed")).toHaveLength(0);
+  });
+
+  it("current event without dateTime (all-day hand edit) → InvalidEventError('start'), no patch", async () => {
+    const id = await booked();
+    const stored = cal.events.get(id)! as Record<string, unknown>;
+    stored.start = { date: "2030-01-07" };
+    stored.end = { date: "2030-01-08" };
+    const err = await svc()
+      .updateEvent({ ...ids(id), changes: { title: "Moved" } })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidEventError);
+    expect((err as InvalidEventError).field).toBe("start");
+    expect(patches()).toHaveLength(0);
+    expect(ofType("calendar_event.failed")).toEqual([
+      expect.objectContaining({
+        operation: "update",
+        errorCode: "invalid_event",
+      }),
+    ]);
+  });
+});

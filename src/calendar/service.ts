@@ -101,9 +101,6 @@ const meetReady = (e: GEvent): boolean =>
 const inviteState = (e: GEvent): string | undefined =>
   e.extendedProperties?.private?.mshindiInvite;
 
-const storedFingerprint = (e: GEvent): string | undefined =>
-  e.extendedProperties?.private?.mshindiFingerprint;
-
 /** Throws before any token fetch, so bad input emits nothing (as createEvent). */
 function requireIds(
   input: Record<string, unknown> | undefined,
@@ -153,20 +150,52 @@ const SAME: {
   guestsCanSeeOtherGuests: (a, b) => a === b,
 };
 
-/** Sorted keys of `changes` whose value differs from `current`. */
+const same = (
+  k: keyof NormalizedEvent,
+  a: NormalizedEvent,
+  b: Partial<NormalizedEvent>,
+): boolean => (SAME[k] as (x: unknown, y: unknown) => boolean)(a[k], b[k]);
+
+/**
+ * Sorted keys of `changes` whose value differs from Google's current copy.
+ * Asking for Meet on a Meet event without a usable link counts as a change.
+ */
 function changedKeys(
+  e: GEvent,
   current: NormalizedEvent,
   changes: Partial<NormalizedEvent>,
 ): (keyof NormalizedEvent)[] {
   return (Object.keys(changes) as (keyof NormalizedEvent)[])
     .filter(
       (k) =>
-        !(SAME[k] as (a: unknown, b: unknown) => boolean)(
-          current[k],
-          changes[k],
-        ),
+        !same(k, current, changes) ||
+        (k === "meeting" &&
+          changes.meeting?.type === "google_meet" &&
+          !meetReady(e)),
     )
     .sort();
+}
+
+/**
+ * Guests named without a displayName keep the one Google has, so the merged
+ * event and the patched copy agree.
+ */
+function withKnownNames(
+  current: NormalizedEvent,
+  changes: Partial<NormalizedEvent>,
+): Partial<NormalizedEvent> {
+  if (changes.attendees === undefined) return changes;
+  const names = new Map(
+    current.attendees.map((a) => [a.email.toLowerCase(), a.displayName]),
+  );
+  return {
+    ...changes,
+    attendees: changes.attendees.map((a) =>
+      a.displayName !== null
+        ? a
+        : { ...a, displayName: names.get(a.email.toLowerCase()) ?? null },
+    ),
+  };
 }
 
 /**
@@ -179,8 +208,13 @@ function updatePatch(
   next: NormalizedEvent,
   changed: (keyof NormalizedEvent)[],
   fp: string,
-): { patch: Partial<GEvent>; conferenceDataVersion: 0 | 1 } {
+): {
+  patch: Partial<GEvent>;
+  conferenceDataVersion: 0 | 1;
+  requestId: string | null;
+} {
   const p: Record<string, unknown> = {};
+  let requestId: string | null = null;
   const has = (k: keyof NormalizedEvent) => changed.includes(k);
   let conferenceDataVersion: 0 | 1 = 0;
   if (has("title")) p.summary = next.title;
@@ -191,22 +225,25 @@ function updatePatch(
   }
   if (has("attendees")) {
     const all = current.attendees ?? [];
-    const rsvp = new Map(
+    const kept = new Map(
       all.flatMap((a) =>
-        a.email && a.responseStatus
-          ? [[a.email.toLowerCase(), a.responseStatus] as const]
+        a.email && a.organizer !== true && a.self !== true
+          ? [[a.email.toLowerCase(), a] as const]
           : [],
       ),
     );
     p.attendees = [
       ...all.filter((a) => a.organizer === true || a.self === true),
       ...next.attendees.map((a) => {
-        const status = rsvp.get(a.email.toLowerCase());
+        // Kept guests keep every other Google field (RSVP, comment, additionalGuests).
+        const { displayName: _d, ...was } =
+          kept.get(a.email.toLowerCase()) ?? {};
+        void _d;
         return {
+          ...was,
           email: a.email,
           ...(a.displayName !== null && { displayName: a.displayName }),
           optional: a.optional,
-          ...(status !== undefined && { responseStatus: status }),
         };
       }),
     ];
@@ -214,14 +251,16 @@ function updatePatch(
   if (has("meeting")) {
     const wasMeet = toNormalized(current).meeting.type === "google_meet";
     if (next.meeting.type === "google_meet") {
-      if (!wasMeet) {
+      // New Meet, or repair of a Meet event whose link never arrived.
+      if (!wasMeet || !meetReady(current)) {
+        requestId = randomUUID();
         p.conferenceData = {
           createRequest: {
-            requestId: randomUUID(),
+            requestId,
             conferenceSolutionKey: { type: "hangoutsMeet" },
           },
         };
-        p.location = null;
+        if (!wasMeet) p.location = null;
         conferenceDataVersion = 1;
       }
     } else {
@@ -236,7 +275,7 @@ function updatePatch(
     p.guestsCanSeeOtherGuests = next.guestsCanSeeOtherGuests;
   }
   p.extendedProperties = { private: { mshindiFingerprint: fp } };
-  return { patch: p as Partial<GEvent>, conferenceDataVersion };
+  return { patch: p as Partial<GEvent>, conferenceDataVersion, requestId };
 }
 
 function eventBody(
@@ -778,7 +817,7 @@ export function createCalendar(
 
     // Call-scoped: if a 401 re-run finds our own patch already applied, it is
     // still our update (one updated event, with the first attempt's `changed`).
-    let attempted: { fp: string; changed: string[] } | null = null;
+    let attempted: { changed: string[] } | null = null;
 
     try {
       const out = await withToken(
@@ -789,29 +828,44 @@ export function createCalendar(
           const current = await getManaged(accessToken, eventId, tenantId);
           if (current.status === "cancelled") throw new EventCancelledError();
 
+          // A hand edit to an all-day event has no dateTime: not ours to reschedule.
+          if (!current.start?.dateTime || !current.end?.dateTime) {
+            throw new InvalidEventError("start");
+          }
           const before = toNormalized(current);
-          const next: NormalizedEvent = { ...before, ...changes };
+          if (
+            Number.isNaN(before.start.getTime()) ||
+            Number.isNaN(before.end.getTime())
+          ) {
+            throw new InvalidEventError("start");
+          }
+          const wanted = withKnownNames(before, changes);
+          const next: NormalizedEvent = { ...before, ...wanted };
           const span = next.end.getTime() - next.start.getTime();
-          if (span <= 0 || span > MAX_EVENT_MS)
+          if (!(span > 0 && span <= MAX_EVENT_MS)) {
             throw new InvalidEventError("end");
-          const fp = fingerprint(next);
-          const changed = changedKeys(before, changes);
-
-          if (fp === storedFingerprint(current) || changed.length === 0) {
-            if (attempted?.fp === fp) {
-              return { event: current, next, changed: attempted.changed };
-            }
-            return { event: current, next, changed: null };
+          }
+          // No-op is judged against Google's copy, not the stored fingerprint:
+          // after a hand edit the requested values must still be applied.
+          const changed = changedKeys(current, before, wanted);
+          if (changed.length === 0) {
+            // A 401 re-run finding our landed patch still reports our update.
+            return {
+              event: current,
+              next,
+              changed: attempted?.changed ?? null,
+            };
           }
 
-          const body = updatePatch(current, next, changed, fp);
-          attempted = { fp, changed };
-          let event = await patchVerified(accessToken, body, fp);
-          if (
-            next.meeting.type === "google_meet" &&
-            before.meeting.type !== "google_meet"
-          ) {
-            event = await pollConference(accessToken, eventId, event);
+          const body = updatePatch(current, next, changed, fingerprint(next));
+          attempted = { changed };
+          let event = await patchVerified(accessToken, body, next, changed);
+          if (body.requestId !== null) {
+            try {
+              event = await pollConference(accessToken, eventId, event);
+            } catch {
+              // The patch landed; a failed poll must not turn it into an error.
+            }
             if (!meetReady(event)) {
               // Guests were already notified by the patch; a link-less Meet event
               // is better than a second round of notifications from a rollback.
@@ -846,13 +900,23 @@ export function createCalendar(
 
     /**
      * No `If-Match` (D§5.4: RSVPs change the etag). Verify-then-retry: after a
-     * retryable failure, a `get` showing our fingerprint means it landed.
+     * retryable failure, a `get` showing every changed value (and our conference
+     * request, if any) means it landed.
      */
     async function patchVerified(
       accessToken: string,
       body: ReturnType<typeof updatePatch>,
-      fp: string,
+      next: NormalizedEvent,
+      changed: (keyof NormalizedEvent)[],
     ): Promise<GEvent> {
+      const landed = (e: GEvent): boolean => {
+        const got = toNormalized(e);
+        return (
+          changed.every((k) => same(k, got, next)) &&
+          (body.requestId === null ||
+            e.conferenceData?.createRequest?.requestId === body.requestId)
+        );
+      };
       for (let attempt = 0; ; attempt++) {
         try {
           return await transport.patch({
@@ -866,8 +930,8 @@ export function createCalendar(
           const c = classifyCalendarError(err);
           if (c.kind !== "retry") return rethrow(err);
           const current = await getManaged(accessToken, eventId, tenantId);
-          if (storedFingerprint(current) === fp) return current;
           if (current.status === "cancelled") throw new EventCancelledError();
+          if (landed(current)) return current;
           const tooLong = c.delayMs !== null && c.delayMs > BACKOFF_CAP_MS;
           if (attempt + 1 >= PATCH_ATTEMPTS || tooLong) return rethrow(err);
           await sleep(
