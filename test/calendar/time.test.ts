@@ -98,3 +98,14 @@ describe("zonedToInstant", () => {
     ).toEqual(new Date("2026-10-25T00:15:00Z"));
   });
 });
+
+describe("zonedToInstant — 30-minute DST", () => {
+  it("returns the earlier instant of a repeated wall time on Lord Howe", () => {
+    expect(
+      zonedToInstant(
+        { year: 2026, month: 4, day: 5, hour: 1, minute: 45 },
+        "Australia/Lord_Howe",
+      )?.toISOString(),
+    ).toBe("2026-04-04T14:45:00.000Z");
+  });
+});

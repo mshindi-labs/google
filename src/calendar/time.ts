@@ -95,14 +95,11 @@ export function zonedToInstant(p: WallTime, tz: string): Date | null {
   const o1 = offsetAt(guess, tz);
   const o2 = offsetAt(guess - o1, tz);
   const found = new Set<number>();
-  for (const offset of new Set([
-    o1,
-    o2,
-    o1 - HOUR,
-    o1 + HOUR,
-    o2 - HOUR,
-    o2 + HOUR,
-  ])) {
+  // ±30 min too: zones like Australia/Lord_Howe shift by half an hour.
+  const shifts = [0, -HOUR, HOUR, -HOUR / 2, HOUR / 2];
+  for (const offset of new Set(
+    [o1, o2].flatMap((o) => shifts.map((d) => o + d)),
+  )) {
     const cand = guess - offset;
     if (sameWall(zonedParts(new Date(cand), tz), p)) found.add(cand);
   }
