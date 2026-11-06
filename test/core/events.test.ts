@@ -140,4 +140,26 @@ describe("createEmitter", () => {
     expect(insertAuditEvent).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledTimes(2);
   });
+
+  it("hashes calendar attendees when redactRecipients", async () => {
+    const seen: GoogleEvent[] = [];
+    const emit = createEmitter({
+      onEvent: (e) => void seen.push(e),
+      store: new InMemoryStore(),
+      redactRecipients: true,
+    });
+    await emit({
+      type: "calendar_event.created",
+      tenantId: "t1",
+      actorId: "a1",
+      connectionId: "c1",
+      eventId: "e1",
+      attendees: ["Ann@x.com"],
+      title: "Sync",
+      start: new Date(0),
+      end: new Date(1),
+      at: new Date(0),
+    });
+    expect(seen[0]).toMatchObject({ attendees: [sha256hex("ann@x.com")] });
+  });
 });

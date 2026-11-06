@@ -1,7 +1,8 @@
 # @mshindi-labs/google
 
 Multi-tenant Google API utilities for TypeScript. Each tenant brings its own Google
-OAuth client; tokens are envelope-encrypted at rest; v1 sends email through Gmail.
+OAuth client; tokens are envelope-encrypted at rest; it sends email through Gmail and books
+interviews on Google Calendar.
 
 ```sh
 npm i @mshindi-labs/google @googleapis/gmail nodemailer html-to-text
@@ -53,8 +54,8 @@ await gmail.send({
 });
 ```
 
-Entry points: `/core`, `/gmail`, `/postgres`, `/testing` (there is no root import).
-Optional peers (`@googleapis/gmail`, `nodemailer`, `html-to-text`, KMS clients) are
+Entry points: `/core`, `/gmail`, `/calendar`, `/postgres`, `/testing` (there is no root import).
+Optional peers (`@googleapis/gmail`, `@googleapis/calendar`, `nodemailer`, `html-to-text`, KMS clients) are
 loaded on first use; a missing one throws `MissingPeerDependencyError` with the
 `npm i` command to run.
 
@@ -67,6 +68,7 @@ own error classes and `instanceof` can be false for a genuine library error.
 
 - [Tenant setup](docs/guides/tenant-setup.md): for a tenant admin creating the Google OAuth client.
 - [Host integration](docs/guides/host-integration.md): wiring, routes, error messages, key providers.
+- [Calendar scheduling](docs/guides/calendar-scheduling.md): idempotent interview booking, reschedule, cancel, free/busy.
 - [Bulk sending](docs/guides/bulk-sending.md): a queue pattern that never double-sends.
 - [Prisma and TypeORM](docs/guides/orm-integration.md): plugging an ORM into the Postgres store.
 - [Postgres row-level security](docs/guides/postgres-rls.md): optional database-enforced tenant isolation.
@@ -82,7 +84,8 @@ own error classes and `instanceof` can be false for a genuine library error.
 - **Hardened OAuth.** Single-use hashed `state` bound to tenant and actor, PKCE S256, a
   fixed HTTPS redirect URI, and ID token checks (audience, verified email, hosted
   domain, intended account).
-- **Least privilege.** Only `openid email` and `gmail.send`. Tokens are revoked at
+- **Least privilege.** Only `openid email`, `gmail.send` and, for Calendar, `calendar.events.owned` and
+  `calendar.events.freebusy`. Tokens are revoked at
   Google on a wrong-account or partial-scope consent, and when a tenant disconnects.
 - **No secrets in output.** Errors, events and logs are redacted; events never carry
   bodies, tokens or secrets, and recipients can be hashed (`redactRecipients`).

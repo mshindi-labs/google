@@ -6,6 +6,14 @@ import {
   RateLimitedError,
   SendOutcomeUnknownError,
 } from "../core/errors.js";
+import {
+  asErr,
+  readMessages,
+  readNetCode,
+  readReason,
+  readRetryAfterMs,
+  readStatus,
+} from "../core/google-http.js";
 
 export type SendErrorClass =
   | { kind: "retry"; delayMs: number | null }
@@ -20,20 +28,6 @@ export class SendUnauthorizedSignal extends Error {
   }
 }
 
-type ErrLike = {
-  name?: unknown;
-  message?: unknown;
-  code?: unknown;
-  status?: unknown;
-  errors?: { reason?: unknown }[];
-  cause?: { code?: unknown } | null;
-  response?: {
-    status?: unknown;
-    headers?: Record<string, unknown>;
-    data?: { error?: { message?: unknown; errors?: { reason?: unknown }[] } };
-  };
-};
-
 const PRE_SEND_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"]);
 const OUTCOME_UNKNOWN_CODES = new Set([
   "ECONNRESET",
@@ -41,42 +35,6 @@ const OUTCOME_UNKNOWN_CODES = new Set([
   "ESOCKETTIMEDOUT",
 ]);
 const RATE_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded"]);
-
-const asErr = (err: unknown): ErrLike =>
-  typeof err === "object" && err !== null ? (err as ErrLike) : {};
-
-function readStatus(e: ErrLike): number | null {
-  const s = e.response?.status ?? e.status ?? e.code;
-  return typeof s === "number" ? s : null;
-}
-
-function readReason(e: ErrLike): string | null {
-  const r =
-    e.response?.data?.error?.errors?.[0]?.reason ?? e.errors?.[0]?.reason;
-  return typeof r === "string" ? r : null;
-}
-
-function readNetCode(e: ErrLike): string | null {
-  const c = e.code ?? e.cause?.code;
-  return typeof c === "string" ? c : null;
-}
-
-function readMessages(e: ErrLike): string {
-  const a = typeof e.message === "string" ? e.message : "";
-  const b = e.response?.data?.error?.message;
-  return `${a} ${typeof b === "string" ? b : ""}`;
-}
-
-function readRetryAfterMs(e: ErrLike): number | null {
-  const raw = e.response?.headers?.["retry-after"];
-  const v = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof v !== "string" && typeof v !== "number") return null;
-  const s = String(v).trim();
-  if (s === "") return null;
-  if (/^\d+(\.\d+)?$/.test(s)) return Math.round(Number(s) * 1000);
-  const at = Date.parse(s);
-  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
-}
 
 export function classifySendError(err: unknown): SendErrorClass {
   if (err instanceof GoogleLibError) return { kind: "fail", error: err };

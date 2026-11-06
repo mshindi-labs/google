@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     core: "src/core/index.ts",
+    calendar: "src/calendar/index.ts",
     gmail: "src/gmail/index.ts",
     postgres: "src/postgres/index.ts",
     testing: "src/testing/index.ts",
@@ -15,6 +16,7 @@ export default defineConfig({
   minify: false,
   external: [
     "google-auth-library",
+    "@googleapis/calendar",
     "@googleapis/gmail",
     "nodemailer",
     "html-to-text",

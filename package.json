@@ -32,6 +32,16 @@
         "default": "./dist/gmail.cjs"
       }
     },
+    "./calendar": {
+      "import": {
+        "types": "./dist/calendar.d.ts",
+        "default": "./dist/calendar.js"
+      },
+      "require": {
+        "types": "./dist/calendar.d.cts",
+        "default": "./dist/calendar.cjs"
+      }
+    },
     "./postgres": {
       "import": {
         "types": "./dist/postgres.d.ts",
@@ -72,6 +82,7 @@
   "peerDependencies": {
     "@aws-sdk/client-kms": "^3.0.0",
     "@google-cloud/kms": "^4.0.0",
+    "@googleapis/calendar": ">=14.0.0 <21.0.0",
     "@googleapis/gmail": "^12.0.0",
     "html-to-text": "^9.0.0",
     "mailparser": "^3.0.0",
@@ -85,6 +96,9 @@
       "optional": true
     },
     "@google-cloud/kms": {
+      "optional": true
+    },
+    "@googleapis/calendar": {
       "optional": true
     },
     "html-to-text": {
@@ -105,6 +119,7 @@
     "@electric-sql/pglite": "^0.5.15",
     "@electric-sql/pglite-socket": "^0.2.18",
     "@google-cloud/kms": "^4.5.0",
+    "@googleapis/calendar": "^16.0.0",
     "@googleapis/gmail": "^12.0.0",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",

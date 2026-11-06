@@ -59,6 +59,40 @@ export type GoogleEvent =
       bcc: string[];
       subject: string;
       at: Date;
+    }
+  | {
+      type: "calendar_event.created" | "calendar_event.cancelled";
+      tenantId: string;
+      actorId: string;
+      connectionId: string;
+      eventId: string;
+      attendees: string[];
+      title: string;
+      start: Date;
+      end: Date;
+      at: Date;
+    }
+  | {
+      type: "calendar_event.updated";
+      tenantId: string;
+      actorId: string;
+      connectionId: string;
+      eventId: string;
+      attendees: string[];
+      title: string;
+      start: Date;
+      end: Date;
+      changed: string[];
+      at: Date;
+    }
+  | {
+      type: "calendar_event.failed";
+      tenantId: string;
+      actorId: string;
+      connectionId: string;
+      operation: "create" | "update" | "cancel";
+      errorCode: string;
+      at: Date;
     };
 
 export type Emit = (
@@ -74,6 +108,13 @@ export function sha256hex(address: string): string {
 }
 
 function redactRecipients(e: GoogleEvent): GoogleEvent {
+  if (
+    e.type === "calendar_event.created" ||
+    e.type === "calendar_event.cancelled" ||
+    e.type === "calendar_event.updated"
+  ) {
+    return { ...e, attendees: e.attendees.map(sha256hex) };
+  }
   if (e.type !== "message.sent" && e.type !== "message.failed") return e;
   return {
     ...e,

@@ -196,3 +196,54 @@ export class InvalidConfigError extends GoogleLibError {
     super("invalid_config", message, opts);
   }
 }
+
+export class InvalidEventError extends GoogleLibError {
+  readonly field: string;
+  constructor(field: string, message?: string, opts?: GoogleErrorOptions) {
+    super(
+      "invalid_event",
+      message ?? `Invalid event field: ${JSON.stringify(field).slice(0, 64)}`,
+      opts,
+    );
+    this.field = field;
+  }
+}
+
+export class EventNotFoundError extends GoogleLibError {
+  constructor(message = "Event not found", opts?: GoogleErrorOptions) {
+    super("event_not_found", message, opts);
+  }
+}
+
+export class EventNotManagedError extends GoogleLibError {
+  constructor(
+    message = "Event is not managed by this library",
+    opts?: GoogleErrorOptions,
+  ) {
+    super("event_not_managed", message, opts);
+  }
+}
+
+export class EventCancelledError extends GoogleLibError {
+  constructor(message = "Event is cancelled", opts?: GoogleErrorOptions) {
+    super("event_cancelled", message, opts);
+  }
+}
+
+export class EventConflictError extends GoogleLibError {
+  constructor(
+    message = "Event was modified concurrently",
+    opts?: GoogleErrorOptions,
+  ) {
+    super("event_conflict", message, opts);
+  }
+}
+
+export class ConferencingUnavailableError extends GoogleLibError {
+  constructor(
+    message = "Google Meet conferencing is unavailable for this calendar",
+    opts?: GoogleErrorOptions,
+  ) {
+    super("conferencing_unavailable", message, opts);
+  }
+}

@@ -17,6 +17,7 @@ const TEST_ONLY = [
   "LocalKeyProvider",
   "FakeGoogleOAuth",
   "CaptureTransport",
+  "FakeCalendar",
   "runStoreContractTests",
 ];
 
@@ -26,14 +27,20 @@ describe("package exports", () => {
       [
         "AwsKmsKeyProvider",
         "BASE_SCOPES",
+        "ConferencingUnavailableError",
         "ConnectionNotFoundError",
         "ConnectionRevokedError",
         "CredentialIntegrityError",
         "DailyQuotaExceededError",
+        "EventCancelledError",
+        "EventConflictError",
+        "EventNotFoundError",
+        "EventNotManagedError",
         "GcpKmsKeyProvider",
         "GoogleApiError",
         "GoogleLibError",
         "InvalidConfigError",
+        "InvalidEventError",
         "InvalidGrantError",
         "InvalidMessageError",
         "InvalidOAuthStateError",
@@ -81,6 +88,19 @@ describe("package exports", () => {
     expect(mod).not.toHaveProperty("InvalidGrantError");
   });
 
+  it("/calendar", async () => {
+    const mod = await load("calendar");
+    expect(names(mod)).toMatchInlineSnapshot(`
+      [
+        "createCalendar",
+        "createCalendarApiTransport",
+        "findCommonSlots",
+      ]
+    `);
+    expect(mod).not.toHaveProperty("InvalidGrantError");
+    expect(mod).not.toHaveProperty("FakeCalendar");
+  });
+
   it("/postgres", async () => {
     expect(names(await load("postgres"))).toMatchInlineSnapshot(`
       [
@@ -96,6 +116,7 @@ describe("package exports", () => {
     expect(names(await load("testing"))).toMatchInlineSnapshot(`
       [
         "CaptureTransport",
+        "FakeCalendar",
         "FakeGoogleOAuth",
         "InMemoryStore",
         "LocalKeyProvider",
@@ -105,7 +126,7 @@ describe("package exports", () => {
   });
 
   it("test-only helpers ship only in /testing", async () => {
-    for (const entry of ["core", "gmail", "postgres"]) {
+    for (const entry of ["core", "gmail", "calendar", "postgres"]) {
       const exported = names(await load(entry));
       for (const name of TEST_ONLY) expect(exported).not.toContain(name);
     }
@@ -114,7 +135,7 @@ describe("package exports", () => {
   });
 
   it("every entry loads through require() with matching names", async () => {
-    for (const entry of ["core", "gmail", "postgres", "testing"]) {
+    for (const entry of ["core", "gmail", "calendar", "postgres", "testing"]) {
       const cjs = require(resolve(dist, `${entry}.cjs`)) as Record<
         string,
         unknown
@@ -170,12 +191,13 @@ describe("package exports", () => {
   it("package.json maps every subpath with its own CJS types", () => {
     const pkg = require("../../package.json");
     expect(Object.keys(pkg.exports).sort()).toEqual([
+      "./calendar",
       "./core",
       "./gmail",
       "./postgres",
       "./testing",
     ]);
-    for (const entry of ["core", "gmail", "postgres", "testing"]) {
+    for (const entry of ["core", "gmail", "calendar", "postgres", "testing"]) {
       expect(pkg.exports[`./${entry}`]).toEqual({
         import: {
           types: `./dist/${entry}.d.ts`,

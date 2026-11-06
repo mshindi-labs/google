@@ -39,15 +39,17 @@ further services on the same foundation.
 
 Every module must hold these. Breaking one is a bug, not a trade-off.
 
-| # | Invariant |
-|---|-----------|
-| I1 | Client secrets, refresh tokens, and PKCE verifiers are never stored, logged, thrown, emitted, or returned in plaintext. |
-| I2 | Every read of tenant-owned data takes `tenantId` and fails closed on mismatch. The only exception is the operator tools `rewrapAll` / `verifyAll` (§5.4), which never return plaintext and run under a separate privileged role. |
-| I3 | Ciphertext is cryptographically bound to its tenant, record, and field (AAD). Moving a ciphertext to another row makes it undecryptable. |
-| I4 | The OAuth callback derives tenant, actor, and intent **only** from server-stored state. |
-| I5 | The redirect URI is fixed at construction time; never taken from request input. |
-| I6 | Access tokens live in process memory only. |
-| I7 | A send is attempted at most once unless the failure provably happened before Google received it, or Google answered `429`. |
+| #   | Invariant                                                                                                                                                                                                                        |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| I1  | Client secrets, refresh tokens, and PKCE verifiers are never stored, logged, thrown, emitted, or returned in plaintext.                                                                                                          |
+| I2  | Every read of tenant-owned data takes `tenantId` and fails closed on mismatch. The only exception is the operator tools `rewrapAll` / `verifyAll` (§5.4), which never return plaintext and run under a separate privileged role. |
+| I3  | Ciphertext is cryptographically bound to its tenant, record, and field (AAD). Moving a ciphertext to another row makes it undecryptable.                                                                                         |
+| I4  | The OAuth callback derives tenant, actor, and intent **only** from server-stored state.                                                                                                                                          |
+| I5  | The redirect URI is fixed at construction time; never taken from request input.                                                                                                                                                  |
+| I6  | Access tokens live in process memory only.                                                                                                                                                                                       |
+| I7  | A send is attempted at most once unless the failure provably happened before Google received it, or Google answered `429`.                                                                                                       |
+| I8  | One `(tenantId, organizerEmail, idempotencyKey)` yields at most one calendar event, and its invitations are sent once.                                                                                                           |
+| I9  | Only calendar events stamped `mshindiGoogle: "v1"` with the same `mshindiTenant` are read or changed.                                                                                                                            |
 
 ---
 
@@ -62,19 +64,20 @@ semantic-release, commitlint, prettier).
 ├── /gmail      createGmail(google) → send()
 ├── /postgres   createPostgresStore(query), migrations
 ├── /testing    InMemoryStore, LocalKeyProvider, CaptureTransport
-├── /calendar   (later)
+├── /calendar   createCalendar(google) → availability, suggestSlots, create/update/cancel/getEvent
 └── /sheets     (later — gsheets migrates here)
 ```
 
 **Dependencies**
 
-| Package | Kind | Used by |
-|---------|------|---------|
-| `google-auth-library` | dependency | core (OAuth2 client, ID token verification) |
-| `@googleapis/gmail` | optional peer | `/gmail` |
-| `nodemailer` (MailComposer only) | optional peer | `/gmail` |
-| `html-to-text` | optional peer | `/gmail` (plain-text fallback) |
-| `@googleapis/calendar`, `@googleapis/sheets` | optional peer | later |
+| Package                                     | Kind          | Used by                                     |
+| ------------------------------------------- | ------------- | ------------------------------------------- |
+| `google-auth-library`                       | dependency    | core (OAuth2 client, ID token verification) |
+| `@googleapis/gmail`                         | optional peer | `/gmail`                                    |
+| `nodemailer` (MailComposer only)            | optional peer | `/gmail`                                    |
+| `html-to-text`                              | optional peer | `/gmail` (plain-text fallback)              |
+| `@googleapis/calendar` (`>=14.0.0 <21.0.0`) | optional peer | `/calendar`                                 |
+| `@googleapis/sheets`                        | optional peer | later                                       |
 
 Importing `/gmail` without its peers throws a clear install-instructions error.
 
@@ -97,16 +100,17 @@ GoogleAuditEvent                 optional persistence of emitted events
 
 ### 4.1 `GoogleOAuthClient`
 
-| Field | Notes |
-|-------|-------|
-| `tenantId` | PK |
-| `clientId` | Validated: ends with `.apps.googleusercontent.com` |
-| `clientSecret` | `EncryptedValue` — write-only |
-| `secretHint` | Last 4 chars, for UI display |
-| `hostedDomain` | Optional Workspace domain, sent as `hd` and enforced on callback |
-| `createdBy`, `createdAt`, `updatedBy`, `updatedAt` | Audit |
+| Field                                              | Notes                                                            |
+| -------------------------------------------------- | ---------------------------------------------------------------- |
+| `tenantId`                                         | PK                                                               |
+| `clientId`                                         | Validated: ends with `.apps.googleusercontent.com`               |
+| `clientSecret`                                     | `EncryptedValue` — write-only                                    |
+| `secretHint`                                       | Last 4 chars, for UI display                                     |
+| `hostedDomain`                                     | Optional Workspace domain, sent as `hd` and enforced on callback |
+| `createdBy`, `createdAt`, `updatedBy`, `updatedAt` | Audit                                                            |
 
 Rules:
+
 - Re-saving with the **same** `clientId` re-encrypts the secret; connections stay active.
 - Saving a **different** `clientId` marks every connection in the tenant `revoked`
   (reason `client_changed`) in the same transaction. Refresh tokens are bound to the
@@ -114,33 +118,33 @@ Rules:
 
 ### 4.2 `GoogleConnection`
 
-| Field | Notes |
-|-------|-------|
-| `id` | UUID, generated by the library (needed before encryption for AAD) |
-| `tenantId` | |
-| `googleSub` | Stable Google account ID from the ID token. Unique with `tenantId`. |
-| `email` | Verified email from the ID token, lower-cased |
-| `displayName` | Optional default From name |
-| `scopes` | Granted scope set (from token response) |
-| `refreshToken` | `EncryptedValue` |
-| `status` | `active` · `revoked` · `error` |
-| `statusReason` | e.g. `invalid_grant`, `client_changed`, `disconnected` |
-| `connectedBy`, `connectedAt`, `updatedAt`, `lastUsedAt` | Audit |
+| Field                                                   | Notes                                                               |
+| ------------------------------------------------------- | ------------------------------------------------------------------- |
+| `id`                                                    | UUID, generated by the library (needed before encryption for AAD)   |
+| `tenantId`                                              |                                                                     |
+| `googleSub`                                             | Stable Google account ID from the ID token. Unique with `tenantId`. |
+| `email`                                                 | Verified email from the ID token, lower-cased                       |
+| `displayName`                                           | Optional default From name                                          |
+| `scopes`                                                | Granted scope set (from token response)                             |
+| `refreshToken`                                          | `EncryptedValue`                                                    |
+| `status`                                                | `active` · `revoked` · `error`                                      |
+| `statusReason`                                          | e.g. `invalid_grant`, `client_changed`, `disconnected`              |
+| `connectedBy`, `connectedAt`, `updatedAt`, `lastUsedAt` | Audit                                                               |
 
 Re-authorizing the same Google account in the same tenant updates the existing row
 (new token, merged scopes, status back to `active`) rather than creating a duplicate.
 
 ### 4.3 `GoogleOAuthState`
 
-| Field | Notes |
-|-------|-------|
-| `stateHash` | SHA-256 of the random state value (PK). The raw value only exists in the URL. |
-| `tenantId`, `actorId` | Who started the flow |
-| `intendedEmail` | Optional; enforced on callback |
-| `connectionId` | Set when adding scopes to an existing connection |
-| `scopes` | Requested scopes |
-| `codeVerifier` | `EncryptedValue` (PKCE) |
-| `expiresAt` | `now + 10 min` |
+| Field                 | Notes                                                                         |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `stateHash`           | SHA-256 of the random state value (PK). The raw value only exists in the URL. |
+| `tenantId`, `actorId` | Who started the flow                                                          |
+| `intendedEmail`       | Optional; enforced on callback                                                |
+| `connectionId`        | Set when adding scopes to an existing connection                              |
+| `scopes`              | Requested scopes                                                              |
+| `codeVerifier`        | `EncryptedValue` (PKCE)                                                       |
+| `expiresAt`           | `now + 10 min`                                                                |
 
 ---
 
@@ -157,12 +161,12 @@ Envelope encryption, per value:
 
 ```ts
 type EncryptedValue = {
-  v: 1;              // format version
-  kid: string;       // KEK id + version, e.g. "gcp-kms:projects/.../cryptoKeyVersions/3"
-  wdek: string;      // wrapped DEK, base64url
-  iv: string;        // base64url
-  ct: string;        // ciphertext, base64url
-  tag: string;       // GCM auth tag, base64url
+  v: 1; // format version
+  kid: string; // KEK id + version, e.g. "gcp-kms:projects/.../cryptoKeyVersions/3"
+  wdek: string; // wrapped DEK, base64url
+  iv: string; // base64url
+  ct: string; // ciphertext, base64url
+  tag: string; // GCM auth tag, base64url
 };
 ```
 
@@ -182,19 +186,22 @@ The same string is passed to KMS as encryption context / AAD where supported.
 ```ts
 interface KeyProvider {
   readonly currentKeyId: string;
-  wrap(dek: Uint8Array, aad: string): Promise<{ kid: string; wdek: Uint8Array }>;
+  wrap(
+    dek: Uint8Array,
+    aad: string,
+  ): Promise<{ kid: string; wdek: Uint8Array }>;
   unwrap(kid: string, wdek: Uint8Array, aad: string): Promise<Uint8Array>;
 }
 ```
 
 Shipped implementations:
 
-| Provider | Use |
-|----------|-----|
-| `GcpKmsKeyProvider` | Recommended production. Uses workload identity → zero secrets in env. |
-| `AwsKmsKeyProvider` | Production on AWS. |
+| Provider                                                      | Use                                                                                            |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `GcpKmsKeyProvider`                                           | Recommended production. Uses workload identity → zero secrets in env.                          |
+| `AwsKmsKeyProvider`                                           | Production on AWS.                                                                             |
 | `StaticKeyProvider({ keys: { [kid]: Uint8Array }, current })` | Small deploys; master key(s) from env or a secret manager. Supports several keys for rotation. |
-| `LocalKeyProvider` (`/testing`) | Dev/test. Throws if `NODE_ENV === 'production'` unless `allowInProduction: true`. |
+| `LocalKeyProvider` (`/testing`)                               | Dev/test. Throws if `NODE_ENV === 'production'` unless `allowInProduction: true`.              |
 
 KMS providers make one KMS call per unwrap. Because access tokens are cached (§7), a
 connection's refresh token is decrypted at most about once an hour per process, so no
@@ -221,14 +228,14 @@ value and reports tampered, moved, or orphaned records. Both are idempotent and 
 ### 6.1 Construction
 
 ```ts
-import { createGoogle } from '@mshindi-labs/google/core';
+import { createGoogle } from "@mshindi-labs/google/core";
 
 const google = createGoogle({
-  store,                       // CredentialStore
-  keyProvider,                 // KeyProvider
-  callbackUrl: 'https://hrms.example.com/api/google/callback', // fixed, HTTPS required outside localhost
-  onEvent: (e) => audit.write(e),        // optional
-  logger,                      // optional; receives redacted messages only
+  store, // CredentialStore
+  keyProvider, // KeyProvider
+  callbackUrl: "https://hrms.example.com/api/google/callback", // fixed, HTTPS required outside localhost
+  onEvent: (e) => audit.write(e), // optional
+  logger, // optional; receives redacted messages only
 });
 ```
 
@@ -239,9 +246,11 @@ Google client.
 
 ```ts
 await google.clients.configure({
-  tenantId, actorId,
-  clientId, clientSecret,
-  hostedDomain: 'sunculture.io',  // optional
+  tenantId,
+  actorId,
+  clientId,
+  clientSecret,
+  hostedDomain: "sunculture.io", // optional
 });
 
 await google.clients.get(tenantId);
@@ -254,13 +263,14 @@ await google.clients.get(tenantId);
 const { url, expiresAt } = await google.oauth.createAuthUrl({
   tenantId,
   actorId,
-  services: ['gmail'],                 // → scopes via the service registry
-  intendedEmail: 'careers@sunculture.io', // optional but recommended
-  connectionId,                        // optional: add scopes to an existing connection
+  services: ["gmail"], // → scopes via the service registry
+  intendedEmail: "careers@sunculture.io", // optional but recommended
+  connectionId, // optional: add scopes to an existing connection
 });
 ```
 
 The library:
+
 1. Loads the tenant's client (fails with `OAuthClientNotConfiguredError` if absent).
 2. Resolves scopes: `openid email` + each service's scopes.
 3. Generates `state` (32 random bytes, base64url) and PKCE `code_verifier`.
@@ -271,10 +281,11 @@ The library:
 
 **Service scope registry (v1):**
 
-| Service | Scopes |
-|---------|--------|
-| (always) | `openid`, `email` |
-| `gmail` | `https://www.googleapis.com/auth/gmail.send` |
+| Service    | Scopes                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------- |
+| (always)   | `openid`, `email`                                                                                                   |
+| `gmail`    | `https://www.googleapis.com/auth/gmail.send`                                                                        |
+| `calendar` | `https://www.googleapis.com/auth/calendar.events.owned`, `https://www.googleapis.com/auth/calendar.events.freebusy` |
 
 ### 6.4 Handle callback
 
@@ -339,8 +350,8 @@ token is still deleted and the event records `googleRevoke: 'failed'`.
   with reason `invalid_grant`, evict the cache, emit `connection.revoked`, throw
   `ConnectionRevokedError`. No retry.
 - **Known Google limits to document for tenants**:
-  - A client in *Testing* publishing status issues refresh tokens that expire after
-    7 days. Use *Internal* (Workspace) or publish the app.
+  - A client in _Testing_ publishing status issues refresh tokens that expire after
+    7 days. Use _Internal_ (Workspace) or publish the app.
   - Google caps live refresh tokens per account per client. Reconnecting many times
     silently invalidates the oldest ones.
 
@@ -351,26 +362,29 @@ token is still deleted and the event records `googleRevoke: 'failed'`.
 ### 8.1 API
 
 ```ts
-import { createGmail } from '@mshindi-labs/google/gmail';
+import { createGmail } from "@mshindi-labs/google/gmail";
 
 const gmail = createGmail(google, {
-  blockedAttachmentExtensions: ['exe', 'bat', 'js'], // optional
-  transport,                                         // optional; default = Gmail API
+  blockedAttachmentExtensions: ["exe", "bat", "js"], // optional
+  transport, // optional; default = Gmail API
 });
 
 const { messageId, threadId } = await gmail.send({
   tenantId,
   connectionId,
-  actorId,                       // for audit
-  fromName: 'SunCulture Careers', // optional; overrides connection.displayName
-  to: ['jane@applicant.com'],     // string | { name, address }, also cc/bcc
-  cc, bcc,
-  replyTo: 'recruiter@sunculture.io',
-  subject: 'Your application',
-  html: '<p>…</p>',
-  text: '…',                      // optional; generated from html if omitted
-  attachments: [{ filename: 'offer.pdf', content: buffer, contentType: 'application/pdf' }],
-  headers: { 'X-Hrms-Application-Id': 'app_123' },
+  actorId, // for audit
+  fromName: "SunCulture Careers", // optional; overrides connection.displayName
+  to: ["jane@applicant.com"], // string | { name, address }, also cc/bcc
+  cc,
+  bcc,
+  replyTo: "recruiter@sunculture.io",
+  subject: "Your application",
+  html: "<p>…</p>",
+  text: "…", // optional; generated from html if omitted
+  attachments: [
+    { filename: "offer.pdf", content: buffer, contentType: "application/pdf" },
+  ],
+  headers: { "X-Hrms-Application-Id": "app_123" },
   thread: { threadId, inReplyTo, references }, // optional: reply in an existing thread
 });
 ```
@@ -399,14 +413,14 @@ const { messageId, threadId } = await gmail.send({
 
 ### 8.3 Retries (I7)
 
-| Condition | Behavior |
-|-----------|----------|
-| Connection error before the request was written (DNS, `ECONNREFUSED`, TLS handshake) | Retry, max 3, exponential backoff with full jitter |
-| HTTP `429` / `403 rateLimitExceeded` / `userRateLimitExceeded` | Retry, max 3, honor `Retry-After`; then `RateLimitedError { retryAfter }` |
-| `403 dailyLimitExceeded` / sending-limit errors | `DailyQuotaExceededError`, no retry |
-| `401` after one forced token refresh | `ConnectionRevokedError` path (§7) |
-| Timeout or reset **after** the request was sent, `5xx` | **No retry** → `SendOutcomeUnknownError` (the message may have been sent) |
-| `400` invalid recipient / message | `InvalidMessageError` |
+| Condition                                                                            | Behavior                                                                  |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Connection error before the request was written (DNS, `ECONNREFUSED`, TLS handshake) | Retry, max 3, exponential backoff with full jitter                        |
+| HTTP `429` / `403 rateLimitExceeded` / `userRateLimitExceeded`                       | Retry, max 3, honor `Retry-After`; then `RateLimitedError { retryAfter }` |
+| `403 dailyLimitExceeded` / sending-limit errors                                      | `DailyQuotaExceededError`, no retry                                       |
+| `401` after one forced token refresh                                                 | `ConnectionRevokedError` path (§7)                                        |
+| Timeout or reset **after** the request was sent, `5xx`                               | **No retry** → `SendOutcomeUnknownError` (the message may have been sent) |
+| `400` invalid recipient / message                                                    | `InvalidMessageError`                                                     |
 
 ### 8.4 Bulk sends (documented pattern, not library code)
 
@@ -424,25 +438,48 @@ per-user rate limits.
 interface CredentialStore {
   // OAuth clients
   getOAuthClient(tenantId: string): Promise<OAuthClientRecord | null>;
-  upsertOAuthClient(rec: OAuthClientRecord, opts: { revokeConnections: boolean }): Promise<void>;
+  upsertOAuthClient(
+    rec: OAuthClientRecord,
+    opts: { revokeConnections: boolean },
+  ): Promise<void>;
 
   // Connections
-  getConnection(tenantId: string, connectionId: string): Promise<ConnectionRecord | null>;
-  findConnectionBySub(tenantId: string, googleSub: string): Promise<ConnectionRecord | null>;
+  getConnection(
+    tenantId: string,
+    connectionId: string,
+  ): Promise<ConnectionRecord | null>;
+  findConnectionBySub(
+    tenantId: string,
+    googleSub: string,
+  ): Promise<ConnectionRecord | null>;
   listConnections(tenantId: string): Promise<ConnectionRecord[]>;
   upsertConnection(rec: ConnectionRecord): Promise<void>;
-  updateConnectionStatus(tenantId: string, connectionId: string,
-    status: ConnectionStatus, reason: string): Promise<void>;
-  touchConnection(tenantId: string, connectionId: string, at: Date): Promise<void>;
+  updateConnectionStatus(
+    tenantId: string,
+    connectionId: string,
+    status: ConnectionStatus,
+    reason: string,
+  ): Promise<void>;
+  touchConnection(
+    tenantId: string,
+    connectionId: string,
+    at: Date,
+  ): Promise<void>;
 
   // OAuth state
   insertOAuthState(rec: OAuthStateRecord): Promise<void>;
-  consumeOAuthState(stateHash: string, now: Date): Promise<OAuthStateRecord | null>; // atomic
+  consumeOAuthState(
+    stateHash: string,
+    now: Date,
+  ): Promise<OAuthStateRecord | null>; // atomic
   deleteExpiredOAuthStates(now: Date): Promise<number>;
 
   // Key rotation
   iterateEncryptedValues(batchSize: number): AsyncIterable<EncryptedValueRef>;
-  replaceEncryptedValue(ref: EncryptedValueRef, value: EncryptedValue): Promise<void>;
+  replaceEncryptedValue(
+    ref: EncryptedValueRef,
+    value: EncryptedValue,
+  ): Promise<void>;
 
   // Optional audit persistence
   insertAuditEvent?(event: GoogleEvent): Promise<void>;
@@ -460,14 +497,17 @@ pass for every adapter, including the in-memory one.
 ## 10. Postgres adapter
 
 ```ts
-import { createPostgresStore, migrations } from '@mshindi-labs/google/postgres';
+import { createPostgresStore, migrations } from "@mshindi-labs/google/postgres";
 
-type Query = <T = unknown>(sql: string, params: unknown[]) => Promise<{ rows: T[] }>;
+type Query = <T = unknown>(
+  sql: string,
+  params: unknown[],
+) => Promise<{ rows: T[] }>;
 
 const store = createPostgresStore({
   query: (sql, params) => pool.query(sql, params), // pg; wrappers for postgres.js / Drizzle / Prisma in docs
-  schema: 'public',                                // optional
-  tablePrefix: 'google_',                          // optional
+  schema: "public", // optional
+  tablePrefix: "google_", // optional
 });
 ```
 
@@ -551,17 +591,100 @@ Policies on each table: `tenant_id = current_setting('app.tenant_id')`. The host
 
 ```ts
 type GoogleEvent =
-  | { type: 'oauth_client.configured' | 'oauth_client.rotated'; tenantId; actorId; clientIdChanged: boolean; at }
-  | { type: 'connection.created' | 'connection.scopes_added'; tenantId; actorId; connectionId; email; scopes; at }
-  | { type: 'connection.revoked'; tenantId; connectionId; reason; at }
-  | { type: 'connection.disconnected'; tenantId; actorId; connectionId; googleRevoke: 'ok' | 'failed'; at }
-  | { type: 'message.sent'; tenantId; actorId; connectionId; messageId; threadId; to; cc; bcc; subject; attachmentCount; at }
-  | { type: 'message.failed'; tenantId; actorId; connectionId; errorCode; to; cc; bcc; subject; at };
+  | {
+      type: "oauth_client.configured" | "oauth_client.rotated";
+      tenantId;
+      actorId;
+      clientIdChanged: boolean;
+      at;
+    }
+  | {
+      type: "connection.created" | "connection.scopes_added";
+      tenantId;
+      actorId;
+      connectionId;
+      email;
+      scopes;
+      at;
+    }
+  | { type: "connection.revoked"; tenantId; connectionId; reason; at }
+  | {
+      type: "connection.disconnected";
+      tenantId;
+      actorId;
+      connectionId;
+      googleRevoke: "ok" | "failed";
+      at;
+    }
+  | {
+      type: "message.sent";
+      tenantId;
+      actorId;
+      connectionId;
+      messageId;
+      threadId;
+      to;
+      cc;
+      bcc;
+      subject;
+      attachmentCount;
+      at;
+    }
+  | {
+      type: "message.failed";
+      tenantId;
+      actorId;
+      connectionId;
+      errorCode;
+      to;
+      cc;
+      bcc;
+      subject;
+      at;
+    }
+  | {
+      type: "calendar_event.created" | "calendar_event.cancelled";
+      tenantId;
+      actorId;
+      connectionId;
+      eventId;
+      attendees;
+      title;
+      start;
+      end;
+      at;
+    }
+  | {
+      type: "calendar_event.updated";
+      tenantId;
+      actorId;
+      connectionId;
+      eventId;
+      attendees;
+      title;
+      start;
+      end;
+      changed;
+      at;
+    }
+  | {
+      type: "calendar_event.failed";
+      tenantId;
+      actorId;
+      connectionId;
+      operation: "create" | "update" | "cancel";
+      errorCode;
+      at;
+    };
 ```
 
 - No message bodies, attachment contents, tokens, codes, or secrets in any event.
 - `redactRecipients: true` (global or per-send) replaces addresses with
-  `sha256(lowercase(address))`.
+  `sha256(lowercase(address))`; for calendar events this applies to `attendees`.
+- Calendar reads (`getEvent`, `getAvailability`, `suggestSlots`) and input validation
+  errors raised before the token fetch emit nothing. In a crash or lost-response corner
+  combined with concurrency, `calendar_event.created` may be emitted twice or not at all;
+  invitations are still sent once (I8).
 - `onEvent` failures are caught and logged; they never fail a send. If the store has
   `insertAuditEvent`, events are also written there.
 
@@ -573,23 +696,29 @@ All errors extend `GoogleLibError { code: string; tenantId?; connectionId? }`.
 Messages are safe to show to admins and never include secret material; `cause` is
 redacted before attaching.
 
-| Code | Class |
-|------|-------|
-| `oauth_client_not_configured` | `OAuthClientNotConfiguredError` |
-| `invalid_oauth_state` | `InvalidOAuthStateError` |
-| `oauth_consent_denied` | `OAuthConsentDeniedError` |
-| `unexpected_account` | `UnexpectedAccountError` |
-| `no_refresh_token` | `NoRefreshTokenError` |
-| `missing_scope` | `MissingScopeError { required: string[] }` |
-| `connection_not_found` | `ConnectionNotFoundError` |
-| `connection_revoked` | `ConnectionRevokedError { reason }` |
-| `credential_integrity` | `CredentialIntegrityError` |
-| `invalid_message` | `InvalidMessageError { field }` |
-| `message_too_large` | `MessageTooLargeError { bytes, limit }` |
-| `rate_limited` | `RateLimitedError { retryAfter }` |
-| `daily_quota_exceeded` | `DailyQuotaExceededError` |
-| `send_outcome_unknown` | `SendOutcomeUnknownError` |
-| `google_api` | `GoogleApiError { status, reason }` (fallback) |
+| Code                          | Class                                          |
+| ----------------------------- | ---------------------------------------------- |
+| `oauth_client_not_configured` | `OAuthClientNotConfiguredError`                |
+| `invalid_oauth_state`         | `InvalidOAuthStateError`                       |
+| `oauth_consent_denied`        | `OAuthConsentDeniedError`                      |
+| `unexpected_account`          | `UnexpectedAccountError`                       |
+| `no_refresh_token`            | `NoRefreshTokenError`                          |
+| `missing_scope`               | `MissingScopeError { required: string[] }`     |
+| `connection_not_found`        | `ConnectionNotFoundError`                      |
+| `connection_revoked`          | `ConnectionRevokedError { reason }`            |
+| `credential_integrity`        | `CredentialIntegrityError`                     |
+| `invalid_message`             | `InvalidMessageError { field }`                |
+| `message_too_large`           | `MessageTooLargeError { bytes, limit }`        |
+| `rate_limited`                | `RateLimitedError { retryAfter }`              |
+| `daily_quota_exceeded`        | `DailyQuotaExceededError`                      |
+| `send_outcome_unknown`        | `SendOutcomeUnknownError`                      |
+| `invalid_event`               | `InvalidEventError { field }`                  |
+| `event_not_found`             | `EventNotFoundError`                           |
+| `event_not_managed`           | `EventNotManagedError`                         |
+| `event_cancelled`             | `EventCancelledError`                          |
+| `event_conflict`              | `EventConflictError`                           |
+| `conferencing_unavailable`    | `ConferencingUnavailableError`                 |
+| `google_api`                  | `GoogleApiError { status, reason }` (fallback) |
 
 ---
 
@@ -624,19 +753,19 @@ redacted before attaching.
 
 ## 14. Threat model summary
 
-| Threat | Mitigation |
-|--------|-----------|
-| DB dump / backup leak | Envelope encryption; KEK outside the DB (KMS) |
-| SQL injection or DB write access swapping tokens between tenants | AAD binding (I3), tenant re-check (I2), optional RLS |
-| CSRF / login-CSRF on OAuth callback | Server-side single-use hashed state bound to actor and tenant (I4) |
-| Authorization code interception | PKCE S256, fixed HTTPS redirect URI (I5) |
-| Wrong account connected (personal Gmail instead of `careers@`) | ID token verification + `intendedEmail` + `hd` checks; the token is revoked on mismatch |
-| Over-privileged tokens | `gmail.send` + `openid email` only; scope check per service |
-| Email header injection via applicant data | CR/LF rejection, header allowlist, MailComposer |
-| Secrets in logs or error trackers | Redaction layer; tested by fuzz (§13) |
-| Duplicate emails to applicants | I7 retry rules; idempotency-key queue pattern |
-| Ex-employee's mailbox still sending | `invalid_grant` → revoked; admin `disconnect()`; audit trail |
-| Compromised host server | Out of scope: it can call `send` legitimately. Limited by KMS IAM and audit. |
+| Threat                                                           | Mitigation                                                                              |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| DB dump / backup leak                                            | Envelope encryption; KEK outside the DB (KMS)                                           |
+| SQL injection or DB write access swapping tokens between tenants | AAD binding (I3), tenant re-check (I2), optional RLS                                    |
+| CSRF / login-CSRF on OAuth callback                              | Server-side single-use hashed state bound to actor and tenant (I4)                      |
+| Authorization code interception                                  | PKCE S256, fixed HTTPS redirect URI (I5)                                                |
+| Wrong account connected (personal Gmail instead of `careers@`)   | ID token verification + `intendedEmail` + `hd` checks; the token is revoked on mismatch |
+| Over-privileged tokens                                           | `gmail.send` + `openid email` only; scope check per service                             |
+| Email header injection via applicant data                        | CR/LF rejection, header allowlist, MailComposer                                         |
+| Secrets in logs or error trackers                                | Redaction layer; tested by fuzz (§13)                                                   |
+| Duplicate emails to applicants                                   | I7 retry rules; idempotency-key queue pattern                                           |
+| Ex-employee's mailbox still sending                              | `invalid_grant` → revoked; admin `disconnect()`; audit trail                            |
+| Compromised host server                                          | Out of scope: it can call `send` legitimately. Limited by KMS IAM and audit.            |
 
 ---
 
@@ -649,7 +778,11 @@ redacted before attaching.
 5. **Ops**: `rewrapAll`, `verifyAll`, state cleanup, the pg-boss docs example.
 6. **Docs**: tenant setup guide (create a GCP project → OAuth client "Internal" → add
    redirect URI → paste ID/secret), host integration guide (Next.js + Express examples).
-7. **Later**: `/sheets` migration from `gsheets`, `/calendar`, more DB adapters.
+7. **Calendar**: `/calendar` (availability, slot suggestions, idempotent create with
+   Google Meet, reschedule, cancel, RSVP status). Done; see
+   `docs/guides/calendar-scheduling.md` and
+   `docs/superpowers/specs/2026-11-05-calendar-design.md`.
+8. **Later**: `/sheets` migration from `gsheets`, more DB adapters.
 
 ---
 

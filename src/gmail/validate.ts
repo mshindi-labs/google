@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { sanitizeDisplayName } from "../core/connections.js";
+import { normalizeEmail } from "../core/address.js";
 import { InvalidMessageError } from "../core/errors.js";
 
 export type Address = string | { name: string; address: string };
@@ -49,10 +50,8 @@ export type NormalizedMessage = {
 };
 
 const LINE_BREAKS = /[\r\n\0]/;
-const ADDRESS_FORBIDDEN = /[\s\u0000-\u001f\u007f-\u009f<>,;"()[\]\\]/;
 const HEADER_NAME = /^X-[A-Za-z0-9-]+$/;
 const CONTENT_TYPE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
-const MAX_ADDRESS = 254;
 const MSG_ID = /^[\x21-\x7e]+$/;
 const THREAD_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -73,15 +72,9 @@ function matching(value: unknown, pattern: RegExp, field: string): string {
 }
 
 function parseAddress(raw: unknown, field: string): string {
-  const v = clean(raw, field);
-  if (v.length > MAX_ADDRESS || ADDRESS_FORBIDDEN.test(v)) fail(field);
-  const parts = v.split("@");
-  if (parts.length !== 2) fail(field);
-  const [local, domain] = parts as [string, string];
-  if (!local || !domain.includes(".")) fail(field);
-  if (domain.startsWith(".") || domain.endsWith(".") || domain.includes(".."))
-    fail(field);
-  return `${local}@${domain.toLowerCase()}`;
+  const v = normalizeEmail(raw);
+  if (v === null) fail(field);
+  return v;
 }
 
 function parseMailAddress(a: Address, path: string): MailAddress {
