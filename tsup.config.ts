@@ -15,6 +15,7 @@ export default defineConfig({
   minify: false,
   external: [
     "google-auth-library",
+    "@googleapis/calendar",
     "@googleapis/gmail",
     "nodemailer",
     "html-to-text",
