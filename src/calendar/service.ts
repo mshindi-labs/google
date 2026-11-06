@@ -535,6 +535,9 @@ export function createCalendar(
     // that an insert of ours may already have landed.
     let ownInsertMayHaveLanded = false;
     let released = false;
+    // Call-scoped: set just before the release patch, so a 401 re-run that
+    // finds the event "sent" knows the release may have been ours.
+    let releaseAttempted = false;
 
     try {
       const { event, created, ev } = await withToken(
@@ -623,6 +626,13 @@ export function createCalendar(
           } else if (created && !meet) {
             // In person: our insert itself sent the invites. (A Meet event that is
             // already "sent" here was released by another call, never by an insert.)
+            released = true;
+          } else if (
+            meet &&
+            releaseAttempted &&
+            inviteState(event) === "sent"
+          ) {
+            // A 401 re-run after our release patch landed (response lost).
             released = true;
           }
           return { event, created, ev };
@@ -760,6 +770,7 @@ export function createCalendar(
       let etag = observed.etag;
       for (let attempt = 0; ; attempt++) {
         try {
+          releaseAttempted = true;
           const event = await transport.patch({
             accessToken,
             eventId,

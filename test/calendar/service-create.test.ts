@@ -511,4 +511,18 @@ describe("createEvent — token refresh", () => {
     expect(invites()).toHaveLength(1);
     expect(ofType("calendar_event.created")).toHaveLength(1);
   });
+
+  it("release patch landed (response lost), 401 on the verify get → created emitted once", async () => {
+    cal.failNext("patch", net("ECONNRESET"), { afterApply: true });
+    cal.failNext(
+      "get",
+      Object.assign(new Error("unauthorized"), {
+        response: { status: 401, data: { error: { errors: [] } } },
+      }),
+    );
+    const r = await svc().createEvent(input());
+    expect(r.created).toBe(true);
+    expect(invites()).toHaveLength(1);
+    expect(ofType("calendar_event.created")).toHaveLength(1);
+  });
 });
