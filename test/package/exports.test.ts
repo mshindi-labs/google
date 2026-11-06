@@ -17,6 +17,7 @@ const TEST_ONLY = [
   "LocalKeyProvider",
   "FakeGoogleOAuth",
   "CaptureTransport",
+  "FakeCalendar",
   "runStoreContractTests",
 ];
 
