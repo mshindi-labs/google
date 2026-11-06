@@ -9,6 +9,7 @@ import {
   CalendarUnauthorizedSignal,
   DuplicateEventSignal,
   EventGoneSignal,
+  PreconditionFailedSignal,
   classifyCalendarError,
   withCalendarRetry,
 } from "../../src/calendar/retry.js";
@@ -63,11 +64,12 @@ describe("classifyCalendarError", () => {
     expect(classifyCalendarError(err)).toEqual({ kind: "retry", delayMs });
   });
 
-  it("maps 401, 409, 404, 410", () => {
+  it("maps 401, 409, 404, 410, 412", () => {
     expect(classifyCalendarError(http(401))).toEqual({ kind: "unauthorized" });
     expect(classifyCalendarError(http(409))).toEqual({ kind: "duplicate" });
     expect(classifyCalendarError(http(404))).toEqual({ kind: "gone" });
     expect(classifyCalendarError(http(410))).toEqual({ kind: "gone" });
+    expect(classifyCalendarError(http(412))).toEqual({ kind: "precondition" });
   });
 
   it("fails 400 conference as ConferencingUnavailableError", () => {
@@ -84,7 +86,7 @@ describe("classifyCalendarError", () => {
       [http(400, "invalid"), 400, "invalid"],
       [http(403, "forbiddenForNonOrganizer"), 403, "forbiddenForNonOrganizer"],
       [http(403, "dailyLimitExceeded"), 403, "dailyLimitExceeded"],
-      [http(412), 412, null],
+      [http(418), 418, null],
     ] as const) {
       const c = classifyCalendarError(err);
       expect(c.kind).toBe("fail");
@@ -182,6 +184,7 @@ describe("withCalendarRetry", () => {
       [409, DuplicateEventSignal],
       [404, EventGoneSignal],
       [410, EventGoneSignal],
+      [412, PreconditionFailedSignal],
     ] as const) {
       const fn = vi.fn().mockRejectedValue(http(status));
       await expect(withCalendarRetry(fn, opts())).rejects.toBeInstanceOf(Sig);

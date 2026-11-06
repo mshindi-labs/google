@@ -9,6 +9,7 @@ import { createGoogle } from "../../src/core/create-google.js";
 import type { GoogleEvent } from "../../src/core/events.js";
 import { deriveEventId } from "../../src/calendar/ids.js";
 import { createCalendar } from "../../src/calendar/service.js";
+import type { CalendarTransport } from "../../src/calendar/transport.js";
 import type { CreateEventInput } from "../../src/calendar/validate.js";
 import { FakeCalendar } from "../../src/testing/fake-calendar.js";
 import { FakeGoogleOAuth } from "../../src/testing/fake-google-oauth.js";
@@ -379,5 +380,135 @@ describe("createEvent — I1", () => {
     expect(e.message).not.toContain("ya29");
     expect(String(e.cause)).not.toContain("ya29");
     expect(String(e.cause?.stack)).not.toContain("ya29");
+  });
+});
+
+describe("createEvent — concurrent same-key calls", () => {
+  /** The shared FakeCalendar, with some operations hooked for call A. */
+  const wrap = (over: Partial<CalendarTransport>): CalendarTransport => ({
+    freeBusy: (p) => cal.freeBusy(p),
+    insert: (p) => cal.insert(p),
+    get: (p) => cal.get(p),
+    patch: (p) => cal.patch(p),
+    delete: (p) => cal.delete(p),
+    ...over,
+  });
+  const svcWith = (transport: CalendarTransport, sleep = async () => {}) =>
+    createCalendar(g, { transport, sleep, random: () => 0 });
+
+  it("B resumes the pending event while A is mid-poll → one invite, one created event", async () => {
+    cal.setConferenceBehaviour("pending", 2);
+    let b: ReturnType<ReturnType<typeof svc>["createEvent"]> | undefined;
+    const callA = svcWith(cal, async () => {
+      if (b === undefined) {
+        b = svc().createEvent(input());
+        await b;
+      }
+    });
+    const a = await callA.createEvent(input());
+    const rb = await b!;
+    expect(a.eventId).toBe(rb.eventId);
+    expect(a.created).toBe(true);
+    expect(rb.created).toBe(false);
+    expect(invites()).toHaveLength(1);
+    expect(ofType("calendar_event.created")).toHaveLength(1);
+    expect(ofType("calendar_event.failed")).toHaveLength(0);
+    expect(cal.events.size).toBe(1);
+  });
+
+  it("B releases between A's last read and A's patch → A's If-Match fails, no second release", async () => {
+    let b: ReturnType<ReturnType<typeof svc>["createEvent"]> | undefined;
+    const tA = wrap({
+      patch: async (p) => {
+        if (b === undefined) {
+          b = svc().createEvent(input());
+          await b;
+        }
+        return cal.patch(p);
+      },
+    });
+    const a = await svcWith(tA).createEvent(input());
+    const rb = await b!;
+    expect(a.eventId).toBe(rb.eventId);
+    expect(a.meeting).toEqual(rb.meeting);
+    expect((a.meeting as { meetUrl: string | null }).meetUrl).not.toBeNull();
+    expect(cal.calls.filter((c) => c.op === "patch")).toHaveLength(2);
+    expect(invites()).toHaveLength(1);
+    expect(ofType("calendar_event.created")).toHaveLength(1);
+  });
+
+  it("A's withdrawal loses the race to a release elsewhere → A resolves as a replay", async () => {
+    cal.setConferenceBehaviour("failure");
+    const tA = wrap({
+      delete: async (p) => {
+        // Another same-key call got a link and released the invites meanwhile.
+        const e = cal.events.get(p.eventId)!;
+        e.conferenceData = {
+          ...e.conferenceData,
+          createRequest: {
+            ...e.conferenceData?.createRequest,
+            status: { statusCode: "success" },
+          },
+          entryPoints: [
+            { entryPointType: "video", uri: "https://meet.google.com/other" },
+          ],
+        };
+        e.extendedProperties!.private!.mshindiInvite = "sent";
+        e.etag = '"released-elsewhere"';
+        return cal.delete(p);
+      },
+    });
+    const a = await svcWith(tA).createEvent(input());
+    expect(a.created).toBe(false);
+    expect(a.meeting).toEqual({
+      type: "google_meet",
+      meetUrl: "https://meet.google.com/other",
+    });
+    expect(cal.events.get(a.eventId)?.status).toBe("confirmed");
+    expect(cal.notifications).toHaveLength(0);
+    expect(ofType("calendar_event.created")).toHaveLength(0);
+    expect(ofType("calendar_event.failed")).toHaveLength(0);
+  });
+
+  it("A's withdrawal finds the event already cancelled elsewhere → ConferencingUnavailableError", async () => {
+    cal.setConferenceBehaviour("failure");
+    const tA = wrap({
+      delete: async (p) => {
+        await cal.delete({
+          accessToken: p.accessToken,
+          eventId: p.eventId,
+          sendUpdates: "none",
+        });
+        return cal.delete(p);
+      },
+    });
+    const err = await svcWith(tA)
+      .createEvent(input())
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConferencingUnavailableError);
+    expect(cal.notifications).toHaveLength(0);
+    expect(warnings).toHaveLength(0);
+  });
+});
+
+describe("createEvent — token refresh", () => {
+  it("401 on the release patch → refresh and re-run: created true, one invite, one created event", async () => {
+    cal.failNext(
+      "patch",
+      Object.assign(new Error("unauthorized"), {
+        response: { status: 401, data: { error: { errors: [] } } },
+      }),
+    );
+    const r = await svc().createEvent(input());
+    expect(r.created).toBe(true);
+    expect(ops()).toEqual([
+      "insert:none",
+      "patch:all",
+      "insert:none",
+      "get:",
+      "patch:all",
+    ]);
+    expect(invites()).toHaveLength(1);
+    expect(ofType("calendar_event.created")).toHaveLength(1);
   });
 });

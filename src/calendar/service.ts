@@ -19,6 +19,7 @@ import {
   classifyCalendarError,
   DuplicateEventSignal,
   EventGoneSignal,
+  PreconditionFailedSignal,
   withCalendarRetry,
 } from "./retry.js";
 import { findCommonSlots } from "./slots.js";
@@ -134,7 +135,12 @@ function eventBody(
 function sanitize(err: unknown): GoogleLibError {
   if (err instanceof GoogleLibError) return err;
   if (err instanceof EventGoneSignal) return new EventNotFoundError();
-  if (err instanceof DuplicateEventSignal) return new EventConflictError();
+  if (
+    err instanceof DuplicateEventSignal ||
+    err instanceof PreconditionFailedSignal
+  ) {
+    return new EventConflictError();
+  }
   return new GoogleApiError(0, null, { cause: err });
 }
 
@@ -365,10 +371,25 @@ export function createCalendar(
           }
 
           if (meet && inviteState(event) === "pending") {
-            event = await confirmConference(accessToken, id, event);
-            event = await releaseInvites(accessToken, id, sendUpdates);
-            released = true;
-          } else if (created) {
+            const conf = await confirmConference(accessToken, id, event);
+            if (conf.releasedElsewhere) {
+              // A concurrent same-key call released the invites while we were
+              // withdrawing: its success is ours, reported as a replay.
+              event = conf.event;
+              created = false;
+            } else {
+              const rel = await releaseInvites(
+                accessToken,
+                id,
+                sendUpdates,
+                conf.event,
+              );
+              event = rel.event;
+              released = rel.byUs;
+            }
+          } else if (created && !meet) {
+            // In person: our insert itself sent the invites. (A Meet event that is
+            // already "sent" here was released by another call, never by an insert.)
             released = true;
           }
           return { event, created, ev };
@@ -432,23 +453,51 @@ export function createCalendar(
       }
     }
 
-    /** D§5.3.1 step 2: wait for the Meet link; on failure withdraw silently. */
+    /**
+     * D§5.3.1 step 2: wait for the Meet link; on failure withdraw silently. The
+     * withdrawal is guarded by the etag of the last observed pending event, so it
+     * cannot cancel an event a concurrent same-key call has just released.
+     */
     async function confirmConference(
       accessToken: string,
       eventId: string,
       inserted: GEvent,
-    ): Promise<GEvent> {
+    ): Promise<{ event: GEvent; releasedElsewhere: boolean }> {
+      const getEv = () => retry(() => transport.get({ accessToken, eventId }));
       let event = inserted;
       for (const ms of CONFERENCE_POLL_MS) {
         if (meetReady(event) || conferenceStatus(event) !== "pending") break;
         await sleep(ms);
-        event = await retry(() => transport.get({ accessToken, eventId }));
+        event = await getEv();
       }
-      if (meetReady(event)) return event;
+      if (meetReady(event)) return { event, releasedElsewhere: false };
       try {
-        await retry(() =>
-          transport.delete({ accessToken, eventId, sendUpdates: "none" }),
-        );
+        for (let attempt = 0; attempt < RELEASE_ATTEMPTS; attempt++) {
+          try {
+            await retry(() =>
+              transport.delete({
+                accessToken,
+                eventId,
+                sendUpdates: "none",
+                ...(event.etag !== undefined && { ifMatch: event.etag }),
+              }),
+            );
+            break;
+          } catch (err) {
+            if (!(err instanceof PreconditionFailedSignal)) throw err;
+            const current = await getEv();
+            if (current.status === "cancelled") break;
+            if (inviteState(current) === "sent") {
+              return { event: current, releasedElsewhere: true };
+            }
+            // Changed but still pending: the link may have arrived meanwhile.
+            if (meetReady(current)) {
+              return { event: current, releasedElsewhere: false };
+            }
+            event = current;
+            if (attempt + 1 >= RELEASE_ATTEMPTS) throw err;
+          }
+        }
       } catch {
         try {
           logger?.warn(
@@ -466,17 +515,24 @@ export function createCalendar(
     }
 
     /**
-     * D§5.3.1 step 3, verify-then-retry: a lost response may hide a patch that
-     * already released the invites, so check the stamp before patching again.
+     * D§5.3.1 step 3. Guarded by `If-Match` (etag of the last observed pending
+     * event) so two concurrent same-key calls cannot both release the invites,
+     * and verify-then-retry so a lost response never causes a second patch.
+     * `byUs` is false when another call released them.
      */
     async function releaseInvites(
       accessToken: string,
       eventId: string,
       sendUpdates: GoogleSendUpdates,
-    ): Promise<GEvent> {
+      observed: GEvent,
+    ): Promise<{ event: GEvent; byUs: boolean }> {
+      if (inviteState(observed) === "sent") {
+        return { event: observed, byUs: false };
+      }
+      let etag = observed.etag;
       for (let attempt = 0; ; attempt++) {
         try {
-          return await transport.patch({
+          const event = await transport.patch({
             accessToken,
             eventId,
             patch: {
@@ -484,25 +540,39 @@ export function createCalendar(
             },
             sendUpdates,
             conferenceDataVersion: 1,
+            ...(etag !== undefined && { ifMatch: etag }),
           });
+          return { event, byUs: true };
         } catch (err) {
           const c = classifyCalendarError(err);
-          if (c.kind !== "retry") return rethrow(err);
+          if (c.kind !== "retry" && c.kind !== "precondition") {
+            return rethrow(err);
+          }
           const current = await retry(() =>
             transport.get({ accessToken, eventId }),
           );
-          if (inviteState(current) === "sent") return current;
-          if (
-            attempt + 1 >= RELEASE_ATTEMPTS ||
-            (c.delayMs !== null && c.delayMs > BACKOFF_CAP_MS)
-          ) {
-            return rethrow(err);
+          if (inviteState(current) === "sent") {
+            // 412: someone else's patch landed. Retryable: most likely ours.
+            return { event: current, byUs: c.kind === "retry" };
           }
-          await sleep(
-            c.delayMs ??
-              random() *
-                Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt),
-          );
+          if (current.status === "cancelled") {
+            throw new EventConflictError(
+              "The event for this idempotency key was cancelled; use a new idempotency key",
+            );
+          }
+          etag = current.etag;
+          const tooLong =
+            c.kind === "retry" &&
+            c.delayMs !== null &&
+            c.delayMs > BACKOFF_CAP_MS;
+          if (attempt + 1 >= RELEASE_ATTEMPTS || tooLong) return rethrow(err);
+          if (c.kind === "retry") {
+            await sleep(
+              c.delayMs ??
+                random() *
+                  Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt),
+            );
+          }
         }
       }
     }

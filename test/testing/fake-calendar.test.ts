@@ -335,4 +335,73 @@ describe("FakeCalendar", () => {
       f.get({ accessToken: T, eventId: "evt1" }),
     ).resolves.toBeTruthy();
   });
+
+  it("patch/delete with a stale ifMatch → 412 conditionNotMet, nothing applied", async () => {
+    const f = new FakeCalendar();
+    const created = await ins(f, ev(), "none");
+    const patch = (ifMatch?: string) =>
+      f.patch({
+        accessToken: T,
+        eventId: "evt1",
+        patch: { summary: "N" },
+        sendUpdates: "all",
+        conferenceDataVersion: 0,
+        ...(ifMatch !== undefined && { ifMatch }),
+      });
+    const err = await patch('"stale"').catch((e) => e);
+    expect(err.response.status).toBe(412);
+    expect(err.response.data.error.errors[0].reason).toBe("conditionNotMet");
+    expect(classifyCalendarError(err).kind).toBe("precondition");
+    expect(f.events.get("evt1")?.summary).toBe("Hi");
+    const patched = await patch(created.etag);
+    expect(patched.summary).toBe("N");
+    expect(await status(patch(created.etag))).toBe(412);
+    const del = (ifMatch: string | undefined) =>
+      f.delete({
+        accessToken: T,
+        eventId: "evt1",
+        sendUpdates: "none",
+        ...(ifMatch !== undefined && { ifMatch }),
+      });
+    expect(await status(del(created.etag))).toBe(412);
+    expect(f.events.get("evt1")?.status).toBe("confirmed");
+    await del(patched.etag);
+    expect(f.events.get("evt1")?.status).toBe("cancelled");
+  });
+
+  it("every applied mutation changes the etag, including conference completion", async () => {
+    const f = new FakeCalendar();
+    f.setConferenceBehaviour("pending", 0);
+    const seen = new Set<string | undefined>();
+    const a = await ins(
+      f,
+      ev({
+        conferenceData: {
+          createRequest: {
+            requestId: "r1",
+            conferenceSolutionKey: { type: "hangoutsMeet" },
+          },
+        },
+      }),
+      "none",
+      1,
+    );
+    seen.add(a.etag);
+    const b = await f.get({ accessToken: T, eventId: "evt1" });
+    expect(b.conferenceData?.createRequest?.status?.statusCode).toBe("success");
+    seen.add(b.etag);
+    const c = await f.get({ accessToken: T, eventId: "evt1" });
+    expect(c.etag).toBe(b.etag);
+    const d = await f.patch({
+      accessToken: T,
+      eventId: "evt1",
+      patch: { summary: "N" },
+      sendUpdates: "none",
+      conferenceDataVersion: 1,
+    });
+    seen.add(d.etag);
+    await f.delete({ accessToken: T, eventId: "evt1", sendUpdates: "none" });
+    seen.add(f.events.get("evt1")?.etag);
+    expect(seen.size).toBe(4);
+  });
 });

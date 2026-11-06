@@ -85,6 +85,37 @@ describe("createCalendarApiTransport", () => {
     });
   });
 
+  it("patch sends If-Match only when ifMatch is given", async () => {
+    h.patch.mockResolvedValue({ data: { id: "e3" } });
+    const t = createCalendarApiTransport();
+    const p = {
+      accessToken: "t",
+      eventId: "e3",
+      patch: { summary: "N" },
+      sendUpdates: "none" as const,
+      conferenceDataVersion: 1 as const,
+    };
+    await t.patch({ ...p, ifMatch: '"etag-1"' });
+    expect(h.patch).toHaveBeenLastCalledWith(expect.any(Object), {
+      headers: { "If-Match": '"etag-1"' },
+    });
+    await t.patch(p);
+    expect(h.patch.mock.lastCall).toHaveLength(1);
+  });
+
+  it("delete sends If-Match only when ifMatch is given", async () => {
+    h.del.mockResolvedValue({ data: "" });
+    const t = createCalendarApiTransport();
+    const p = { accessToken: "t", eventId: "e4", sendUpdates: "none" as const };
+    await t.delete({ ...p, ifMatch: '"etag-2"' });
+    expect(h.del).toHaveBeenLastCalledWith(
+      { calendarId: "primary", eventId: "e4", sendUpdates: "none" },
+      { headers: { "If-Match": '"etag-2"' } },
+    );
+    await t.delete(p);
+    expect(h.del.mock.lastCall).toHaveLength(1);
+  });
+
   it("delete passes sendUpdates", async () => {
     h.del.mockResolvedValue({ data: "" });
     await expect(

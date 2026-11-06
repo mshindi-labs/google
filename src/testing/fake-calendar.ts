@@ -157,11 +157,13 @@ export class FakeCalendar implements CalendarTransport {
     patch: Partial<GEvent>;
     sendUpdates: GoogleSendUpdates;
     conferenceDataVersion: 0 | 1;
+    ifMatch?: string;
   }): Promise<GEvent> {
     this.calls.push({ op: "patch", sendUpdates: p.sendUpdates });
     return this.run("patch", () => {
       const ev = this.events.get(p.eventId);
       if (!ev) throw httpError(404, "notFound", "Not Found");
+      this.checkIfMatch(ev, p.ifMatch);
       const before = clone(ev);
       const patch = clone(p.patch);
       const priv = patch.extendedProperties?.private;
@@ -200,11 +202,13 @@ export class FakeCalendar implements CalendarTransport {
     accessToken: string;
     eventId: string;
     sendUpdates: GoogleSendUpdates;
+    ifMatch?: string;
   }): Promise<void> {
     this.calls.push({ op: "delete", sendUpdates: p.sendUpdates });
     return this.run("delete", () => {
       const ev = this.events.get(p.eventId);
       if (!ev) throw httpError(404, "notFound", "Not Found");
+      this.checkIfMatch(ev, p.ifMatch);
       if (ev.status === "cancelled") {
         throw httpError(410, "deleted", "Resource has been deleted");
       }
@@ -228,6 +232,14 @@ export class FakeCalendar implements CalendarTransport {
     return result;
   }
 
+  /** Google answers 412 when `If-Match` names an etag other than the current one. */
+  private checkIfMatch(ev: GEvent, ifMatch: string | undefined): void {
+    if (ifMatch !== undefined && ifMatch !== ev.etag) {
+      throw httpError(412, "conditionNotMet", "Precondition Failed");
+    }
+  }
+
+  /** Every applied mutation gets a new etag, as on Google. */
   private stamp(ev: GEvent): void {
     ev.etag = `"fake-etag-${++this.etagN}"`;
     ev.htmlLink = `https://calendar.google.com/calendar/event?eid=${encodeURIComponent(ev.id)}`;
@@ -273,6 +285,7 @@ export class FakeCalendar implements CalendarTransport {
     if (!req) return;
     req.status = { statusCode: "success" };
     this.addEntryPoint(ev);
+    this.stamp(ev);
   }
 
   private addEntryPoint(ev: GEvent): void {

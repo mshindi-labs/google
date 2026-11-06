@@ -65,15 +65,22 @@ export interface CalendarTransport {
     patch: Partial<GEvent>;
     sendUpdates: GoogleSendUpdates;
     conferenceDataVersion: 0 | 1;
+    /** Sent as `If-Match`; Google answers 412 when the event's etag differs. */
+    ifMatch?: string;
   }): Promise<GEvent>;
   delete(p: {
     accessToken: string;
     eventId: string;
     sendUpdates: GoogleSendUpdates;
+    /** Sent as `If-Match`; Google answers 412 when the event's etag differs. */
+    ifMatch?: string;
   }): Promise<void>;
 }
 
-type Call<D> = (params: Record<string, unknown>) => Promise<{ data: D }>;
+type Call<D> = (
+  params: Record<string, unknown>,
+  options?: { headers?: Record<string, string> },
+) => Promise<{ data: D }>;
 type CalendarApi = {
   events: {
     insert: Call<GEvent>;
@@ -98,6 +105,9 @@ type CalendarModule = {
 };
 
 const CALENDAR_ID = "primary";
+
+const ifMatchArgs = (ifMatch: string | undefined) =>
+  ifMatch === undefined ? [] : [{ headers: { "If-Match": ifMatch } }];
 
 /**
  * Talks to the Google Calendar API (always the `primary` calendar). Errors are
@@ -167,24 +177,27 @@ export function createCalendarApiTransport(): CalendarTransport {
       patch,
       sendUpdates,
       conferenceDataVersion,
+      ifMatch,
     }) {
       const api = await client(accessToken);
-      const { data } = await api.events.patch({
-        calendarId: CALENDAR_ID,
-        eventId,
-        requestBody: patch,
-        sendUpdates,
-        conferenceDataVersion,
-      });
+      const { data } = await api.events.patch(
+        {
+          calendarId: CALENDAR_ID,
+          eventId,
+          requestBody: patch,
+          sendUpdates,
+          conferenceDataVersion,
+        },
+        ...ifMatchArgs(ifMatch),
+      );
       return data;
     },
-    async delete({ accessToken, eventId, sendUpdates }) {
+    async delete({ accessToken, eventId, sendUpdates, ifMatch }) {
       const api = await client(accessToken);
-      await api.events.delete({
-        calendarId: CALENDAR_ID,
-        eventId,
-        sendUpdates,
-      });
+      await api.events.delete(
+        { calendarId: CALENDAR_ID, eventId, sendUpdates },
+        ...ifMatchArgs(ifMatch),
+      );
     },
   };
 }

@@ -21,6 +21,7 @@ export type CalendarErrorClass =
   | { kind: "unauthorized" }
   | { kind: "duplicate" }
   | { kind: "gone" }
+  | { kind: "precondition" }
   | { kind: "fail"; error: GoogleLibError };
 
 /** Thrown by `withCalendarRetry` when Google answered 401; the caller refreshes and retries once. */
@@ -44,6 +45,14 @@ export class EventGoneSignal extends Error {
   constructor() {
     super("Event not found or deleted (404/410)");
     this.name = "EventGoneSignal";
+  }
+}
+
+/** Thrown by `withCalendarRetry` when Google answered 412 (`If-Match` etag is stale). */
+export class PreconditionFailedSignal extends Error {
+  constructor() {
+    super("Event changed since it was read (412)");
+    this.name = "PreconditionFailedSignal";
   }
 }
 
@@ -74,6 +83,7 @@ export function classifyCalendarError(err: unknown): CalendarErrorClass {
   if (status === 401) return { kind: "unauthorized" };
   if (status === 409) return { kind: "duplicate" };
   if (status === 404 || status === 410) return { kind: "gone" };
+  if (status === 412) return { kind: "precondition" };
   if (status === 400) {
     if (/conference/i.test(readMessages(e))) {
       return {
@@ -107,7 +117,7 @@ const defaultSleep = (ms: number): Promise<void> =>
 /**
  * Runs `fn`, retrying rate limits, 5xx and network failures. Unlike Gmail's send
  * (I7), this deliberately retries ambiguous failures: callers only wrap idempotent
- * calls. 401/409/404/410 surface as internal signals; everything else as sanitized
+ * calls. 401/409/404/410/412 surface as internal signals; everything else as sanitized
  * `GoogleLibError`s.
  */
 export async function withCalendarRetry<T>(
@@ -129,6 +139,7 @@ export async function withCalendarRetry<T>(
       if (c.kind === "unauthorized") throw new CalendarUnauthorizedSignal();
       if (c.kind === "duplicate") throw new DuplicateEventSignal();
       if (c.kind === "gone") throw new EventGoneSignal();
+      if (c.kind === "precondition") throw new PreconditionFailedSignal();
       if (c.delayMs !== null && c.delayMs > capMs) {
         throw new RateLimitedError(c.delayMs, { cause: err });
       }
