@@ -14,10 +14,12 @@ cannot use the **Internal** setting in step 3.
 3. Name it (for example "Careers email") and make sure the **Organization** is your
    company. Choose **Create**.
 
-## 2. Turn on the Gmail API
+## 2. Turn on the Gmail API (and the Calendar API)
 
 1. With the new project selected, open **APIs & Services > Library**.
 2. Search for **Gmail API**, open it and choose **Enable**.
+3. If the application will also book interviews on a calendar, do the same for
+   **Google Calendar API**.
 
 ## 3. Set up the OAuth consent screen as Internal
 
@@ -54,7 +56,10 @@ cannot use the **Internal** setting in step 3.
 2. Paste the **Client ID** and **Client secret** and save. The secret is encrypted and
    is never shown again. Only its last few characters are displayed.
 3. Choose **Connect**, sign in as the mailbox that should send email (for example
-   `careers@yourcompany.com`), and approve the request to **send email on your behalf**.
+   `careers@yourcompany.com`), and approve the request to **send email on your behalf**. If calendar booking is
+   enabled, you are also asked to **manage events on calendars you own** and to **see
+   free/busy information**. A mailbox that was connected for email only must go through
+   Connect again to add the calendar permissions.
 
 If you see "wrong account", you signed in with a different mailbox than the one the
 application expected. Choose Connect again and select the right one.
@@ -70,5 +75,10 @@ application expected. Choose Connect again and select the right one.
   connection as revoked and asks you to reconnect.
 - **Reconnecting often.** Google keeps a limited number of active sign-ins per account
   and client. Reconnecting many times can silently invalidate the oldest ones.
+- **Calendar free/busy.** For the application to suggest meeting times, your Workspace
+  must let people see each other's free/busy. In the Admin console open **Apps > Google
+  Workspace > Calendar > Sharing settings** and share at least free/busy within your
+  organization. Colleagues who are not visible show as "unknown" and no times are
+  suggested for them. See the [calendar guide](./calendar-scheduling.md).
 - **Sending limits.** Google limits how many emails a mailbox can send per day
   (Workspace accounts have a higher limit than personal accounts).
