@@ -102,6 +102,7 @@ describe("package exports", () => {
     expect(names(await load("testing"))).toMatchInlineSnapshot(`
       [
         "CaptureTransport",
+        "FakeCalendar",
         "FakeGoogleOAuth",
         "InMemoryStore",
         "LocalKeyProvider",
